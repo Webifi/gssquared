@@ -163,6 +163,12 @@ video_system_t::video_system_t(computer_t *computer) {
             toggle_display_engine();
             return true;
         }
+        // Second Sight cycles monitor visibility without stopping either display.
+        if (key == SDLK_F11 && additional_display) {
+            auto &settings = SystemSettings::instance();
+            settings.set_ss_view((settings.ss_view() + 1) % SystemSettings::SS_VIEW_COUNT);
+            return true;
+        }
         if (key == SDLK_F7) {
             toggle_crt_shader();
             return true;
@@ -179,6 +185,9 @@ video_system_t::video_system_t(computer_t *computer) {
     computer->sys_event->registerHandler(SDL_EVENT_KEY_DOWN, [this, computer](const SDL_Event &event) {
         int key = event.key.key;
         switch (key) {
+            // Consume the paired key-down so F11 does not reach the Apple keyboard.
+            case SDLK_F11:
+                return bool(additional_display);
             case SDLK_F3:
             case SDLK_F1:
             case SDLK_F5:
@@ -674,11 +683,26 @@ void video_system_t::update_display(bool force_full_frame) {
 
     clear(); // clear the current render target (scene_target or swapchain).
 
+    // Second Sight shares the browser canvas. Save the full Apple target and
+    // reserve its left half for the built-in monitor when both are visible.
+    const SDL_FRect full_target = target;
+#if defined(__EMSCRIPTEN__)
+    if (additional_display && SystemSettings::instance().ss_view() == SystemSettings::SS_VIEW_BOTH) {
+        target.w *= 0.5f;
+        target.h *= 0.5f;
+        target.y += target.h * 0.5f;
+    }
+#endif
     for (const auto& pair : frame_handlers) {
         if (pair.second(force_full_frame)) {
             break; // Stop processing if handler returns true
         }
     }
+
+    // Draw Second Sight after the Apple frame, then restore the full target
+    // so overlays and the next frame do not inherit the split layout.
+    if (additional_display) additional_display();
+    target = full_target;
 
     if (use_scene) {
         SDL_SetRenderTarget(renderer, nullptr);

@@ -64,6 +64,13 @@ struct video_system_t {
 
     std::multimap<int, FrameHandler, std::greater<int>> frame_handlers;
 
+    // Second Sight owns these main-thread display hooks and detaches them on
+    // shutdown. The window is borrowed; its pixels do not pass through the
+    // built-in Apple video frame processors.
+    SDL_Window *additional_window = nullptr;
+    std::function<void()> additional_display;
+    std::function<bool(const SDL_Event &)> additional_display_event;
+
     SDL_Window *window; // primary emulated display window
     SDL_Renderer* renderer;
     // Non-null when the renderer is the SDL GPU-backed renderer (required for

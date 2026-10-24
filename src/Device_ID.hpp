@@ -33,5 +33,12 @@ typedef enum device_id {
     DEVICE_ID_UTHERNET2,
     DEVICE_ID_SUPER_SERIAL,
     DEVICE_ID_VOC,
+    // Firmware-executing Second Sight, distinct from the high-level display card.
+    DEVICE_ID_SECOND_SIGHT_Z180,
     NUM_DEVICE_IDS
 } device_id;
+
+// Shared menu/config predicate for the firmware-executing Second Sight device.
+inline bool is_second_sight_z180(device_id id) {
+    return id == DEVICE_ID_SECOND_SIGHT_Z180;
+}

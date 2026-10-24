@@ -133,6 +133,10 @@ void handle_single_event(computer_t *computer, cpu_state *cpu, SDL_Event &event)
     if (computer->debug_window->handle_event(event)) { // ignores event if not for debug window
         return;
     }
+    // Second Sight translates its monitor input to the existing Apple input
+    // path. Consume it here so it is not dispatched a second time.
+    if (computer->video_system->additional_display_event &&
+        computer->video_system->additional_display_event(event)) return;
     if (!osd->event(event)) { // if osd doesn't handle it..
         computer->dispatch->dispatch(event); // they say call "once per frame"
     }
@@ -256,32 +260,15 @@ static void gs2_web_lock_raf() {
     emscripten_set_main_loop_timing(EM_TIMING_RAF, 1);
 }
 
-// The next guest frame cannot start until the browser calls us back, which is
-// after we return. Spinning all the way to the deadline stacks that delay on
-// top of the frame, and the slower wasm work then slips. Return this much
-// early so the callback lands on the deadline. Adapted from how late the
-// previous wake actually was.
-static uint64_t gs2_web_wake_lead_ns = 2'000'000;
+// Second Sight shares browser execution with Apple video and audio. Keep
+// the guest deadline across requestAnimationFrame (RAF) display callbacks;
+// an early callback yields until the guest frame is due.
 static uint64_t gs2_web_target_start_ns = 0;
 
-static void gs2_web_begin_frame(computer_t *computer) {
-    (void)computer;
-    uint64_t now = SDL_GetTicksNS();
-    if (gs2_web_target_start_ns == 0) {
-        return;
-    }
-    int64_t late = (int64_t)now - (int64_t)gs2_web_target_start_ns;
-    int64_t lead = (int64_t)gs2_web_wake_lead_ns + late / 2;
-    if (lead < 0) lead = 0;
-    if (lead > 8'000'000) lead = 8'000'000;
-    gs2_web_wake_lead_ns = (uint64_t)lead;
-    // The browser often calls back before the guest deadline. Starting the
-    // frame then, and rebasing last_cycle_time to that early wake, shortens
-    // every frame (measured 60.5 fps). Hold until the stamped boundary.
-    if (now < gs2_web_target_start_ns) {
-        while (SDL_GetTicksNS() < gs2_web_target_start_ns) {
-        }
-    }
+// Second Sight shares the browser main thread. Return false before the next
+// guest deadline so the browser can process input/audio until another callback.
+static bool gs2_web_begin_frame() {
+    return !gs2_web_target_start_ns || SDL_GetTicksNS() >= gs2_web_target_start_ns;
 }
 #endif
 
@@ -292,33 +279,25 @@ void frame_sleep(computer_t *computer, uint64_t last_cycle_time, uint64_t ns_per
 
     uint64_t wakeup_time = last_cycle_time + ns_per_frame; /*  + (frame_count & 1); */ // even frames have 16688154, odd frames have 16688154 + 1
 
+#ifdef __EMSCRIPTEN__
+    // Second Sight execution can occupy much of a browser frame. Schedule the
+    // next frame here instead of spinning and blocking browser input/audio.
+    const uint64_t now = SDL_GetTicksNS();
+    computer->frame_slipped = now > wakeup_time;
+    if (computer->frame_slipped) ++computer->clock_slip;
+    // Rebase after a long pause; ordinary RAF jitter must not change the rate.
+    gs2_web_target_start_ns = now > wakeup_time + 4 * ns_per_frame ? now : wakeup_time;
+    return;
+#else
     // sleep out the rest of this frame.
     uint64_t sleep_loops = 0;
     uint64_t current_time = SDL_GetTicksNS();
     if (current_time > wakeup_time) {
         computer->clock_slip++;
         computer->frame_slipped = true;
-#if defined(__EMSCRIPTEN__)
-        gs2_web_target_start_ns = 0;
-#endif
         // TODO: log clock slip for later display.
         //printf("Clock slip: event_time: %10llu, audio_time: %10llu, display_time: %10llu, app_event_time: %10llu, total: %10llu\n", event_time, audio_time, display_time, app_event_time, event_time + audio_time + display_time + app_event_time);
     } else {
-#if defined(__EMSCRIPTEN__)
-        // No Asyncify, so this cannot yield. Return early by the lead so the
-        // browser can deliver the next callback at the guest deadline.
-        // gs2_web_begin_frame() holds if that callback arrives early; that
-        // hold is what keeps the rate at 59.9227 Hz instead of creeping up.
-        uint64_t lead = gs2_web_wake_lead_ns;
-        if (lead > ns_per_frame / 2) lead = ns_per_frame / 2;
-        uint64_t return_at = wakeup_time - lead;
-        if (current_time < return_at) {
-            while (SDL_GetTicksNS() < return_at) {
-                sleep_loops++;
-            }
-        }
-        gs2_web_target_start_ns = wakeup_time;
-#else
         if (gs2_app_values.sleep_mode) { // sleep most of it, but more aggressively sneak up on target than SDL_DelayPrecise does itself
             SDL_DelayPrecise((wakeup_time - SDL_GetTicksNS())*0.95);
         }
@@ -326,8 +305,8 @@ void frame_sleep(computer_t *computer, uint64_t last_cycle_time, uint64_t ns_per
         do {
             sleep_loops++;
         } while (SDL_GetTicksNS() < wakeup_time);
-#endif
     }
+#endif
 }
 
 #if 0
@@ -381,6 +360,10 @@ Called from transition_to_emulation() when a system is selected.
 */
 void run_cpus_init(computer_t *computer) {
     computer->last_cycle_time = SDL_GetTicksNS();
+#ifdef __EMSCRIPTEN__
+    // Start a machine with no stale Second Sight/browser frame deadline.
+    gs2_web_target_start_ns = 0;
+#endif
     computer->last_start_frame_c14m = 0;
     computer->cached_speaker_state = computer->get_module_state(MODULE_SPEAKER);
     computer->cached_display_state = computer->get_module_state(MODULE_DISPLAY);
@@ -468,7 +451,8 @@ bool run_one_frame(computer_t *computer) {
     } else if (computer->execution_mode == EXEC_NORMAL) {
 
 #if defined(__EMSCRIPTEN__)
-        gs2_web_begin_frame(computer);
+        // A browser callback may arrive early; do no Apple/card work until due.
+        if (!gs2_web_begin_frame()) return true;
 #endif
         computer->set_frame_start_cycle();
         uint64_t frame_cpu_start = clock->get_cycles();
@@ -651,14 +635,9 @@ bool run_one_frame(computer_t *computer) {
             gs2_app_values.modal_tracking,
             clock->get_cycles() - frame_cpu_start);
 #if defined(__EMSCRIPTEN__)
-        // Stamp the guest boundary, not the early return. The next callback
-        // is the rest of the wait; stamping "now" would shrink every frame
-        // by the lead and run fast.
-        if (!computer->frame_slipped && gs2_web_target_start_ns != 0) {
-            computer->last_cycle_time = gs2_web_target_start_ns;
-        } else {
-            computer->last_cycle_time = SDL_GetTicksNS();
-        }
+        // Keep the scheduled boundary so browser callback jitter does not
+        // change the rate of Apple execution and Second Sight bus traffic.
+        computer->last_cycle_time = gs2_web_target_start_ns;
 #else
         computer->last_cycle_time = SDL_GetTicksNS();
 #endif 
@@ -1064,7 +1043,7 @@ void transition_to_emulation(GS2AppState *state, const SystemConfig_t *system_co
     vs->update_target_from_output();
 
     // Emulation manages its own timing, so turn off vsync.
-    // On the web, frame_sleep holds the guest frame and gs2_web_lock_raf()
+    // On the web, frame_sleep schedules the next guest frame and gs2_web_lock_raf()
     // keeps requestAnimationFrame. SDL_SetRenderVSync(1) must not be used
     // there: it arms a one-shot 60 Hz software vsync that does not survive
     // close/reopen (the second renderer then runs at the panel refresh).
@@ -2399,7 +2378,10 @@ static void update_display_sleep(GS2AppState *state) {
     if (state->phase == PHASE_EMULATION && computer != nullptr
         && computer->execution_mode == EXEC_NORMAL) {
         video_system_t *vs = computer->video_system;
-        if (vs != nullptr && window_has_input_focus(vs->window)) {
+        // Activity in the Second Sight monitor should keep the display awake
+        // just as activity in the built-in Apple monitor does.
+        if (vs != nullptr && (window_has_input_focus(vs->window)
+            || window_has_input_focus(vs->additional_window))) {
             inhibit = true;
         } else if (computer->debug_window != nullptr && computer->debug_window->window_open
                    && window_has_input_focus(computer->debug_window->window)) {

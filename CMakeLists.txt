@@ -270,11 +270,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 if(EMSCRIPTEN)
     add_compile_options(-pthread)
     add_link_options(-pthread)
-    # Emscripten defaults to DISABLE_EXCEPTION_CATCHING, which turns every throw
-    # into an abort even where we catch it (toml++ throws parse_error when a .gs2
-    # is missing or malformed — SystemConfig::load catches that and falls back).
-    add_compile_options(-fexceptions)
-    add_link_options(-fexceptions)
+    # Second Sight pauses Z180 instructions with setjmp/longjmp and uses C++
+    # errors for failed card jobs. Keep both mechanisms in WebAssembly; SIMD
+    # supplies the vector pixel conversions in the card renderer.
+    add_compile_options(-msimd128 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
+    add_link_options(-msimd128 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
 endif()
 
 configure_sdl_builds()
@@ -390,8 +390,27 @@ target_link_libraries(gs2_devices_scc8530 PUBLIC gs2_serial_devices)
 add_library(gs2_devices_ssc src/devices/ssc/ssc.cpp)
 target_link_libraries(gs2_devices_ssc PUBLIC gs2_serial_devices)
 
+# Keep Second Sight's processor/peripherals separate from SDL presentation so
+# the card's command-line timing checks can link only the required components.
+add_library(gs2_devices_secondsight_z180
+    src/devices/secondsight/z180/Z180.cpp
+    src/devices/secondsight/z180/Z180ASCI.cpp
+    src/devices/secondsight/z180/Z180CSIO.cpp
+)
+
 add_library(gs2_devices_secondsight
     src/devices/secondsight/secondsight.cpp
+    # Second Sight firmware execution, board wiring, video chips and monitor.
+    src/devices/secondsight/ss_card.cpp
+    src/devices/secondsight/ss_z180.cpp
+    src/devices/secondsight/ss_display.cpp
+    src/devices/secondsight/oti087.cpp
+    src/devices/secondsight/oti087_memory.cpp
+    src/devices/secondsight/oti087_registers.cpp
+    src/devices/secondsight/oti087_render.cpp
+    src/devices/secondsight/oti087_present.cpp
+    src/devices/secondsight/bt481.cpp
+    src/devices/secondsight/ss_eeprom.cpp
     src/devices/secondsight/ss_a2_text_sync.cpp
     src/devices/secondsight/ss_host_text.cpp
     src/devices/secondsight/ss_gpu_text.cpp
@@ -405,7 +424,8 @@ add_library(gs2_devices_secondsight
     src/devices/secondsight/vga_render_text_8x8.cpp
     src/devices/secondsight/vga_render_text_8x8_present.cpp
 )
-target_link_libraries(gs2_devices_secondsight PRIVATE ${GS2_SDL3_IMAGE} gs2_displaypp gs2_paths)
+# Second Sight board callbacks execute the separate Z180 processor library.
+target_link_libraries(gs2_devices_secondsight PRIVATE ${GS2_SDL3_IMAGE} gs2_displaypp gs2_paths gs2_devices_secondsight_z180)
 
 add_library(gs2_devices_voc src/devices/voc/voc.cpp)
 target_link_libraries(gs2_devices_voc PRIVATE gs2_displaypp)
@@ -812,6 +832,9 @@ if(NOT EMSCRIPTEN)
     add_subdirectory(apps/gs2packtest)
 
     add_subdirectory(apps/ssgputexttest)
+    # Build maintainer checks for Second Sight reset and clock contracts.
+    add_subdirectory(apps/sscardtest)
+    add_subdirectory(apps/ssclocktest)
 endif()
 
 ################################################################################

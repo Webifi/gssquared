@@ -51,9 +51,19 @@ The shader mode can be activated with Display > CRT Shader, or by pressing F7. T
 
 ## Second Sight Text
 
-If the current machine has a **Second Sight** card, **Display → Second Sight Text** renders Apple II fullscreen 40- or 80-column text through the card’s VGA path, using an Apple-ified font from the Second Sight ROM. Graphics modes and Second Sight’s own VGA modes are unchanged.
+If the current machine has the simulated **Second Sight** card, **Display → Second Sight Text** renders Apple II fullscreen 40- or 80-column text through the card’s VGA path, using an Apple-ified font from the Second Sight ROM. Graphics modes and Second Sight’s own VGA modes are unchanged.
 
 The menu item is grayed out when no Second Sight card is present. The setting is remembered in app settings. See [Second Sight](Cards_SecondSight.md).
+
+## Second Sight with Z180
+
+The real card has its own monitor, separate from the IIgs display. **Display → Second Sight → Monitor → VGA** (default) and **AppleColor RGB** select its monitor type. The ROM reads the monitor sense at each card mode change and offers different modes for each monitor. The choice takes effect at the next card mode change; **Machine → Restart** shows it at once.
+
+**Display → Second Sight → View → IIgs monitor**, **Second Sight monitor**, and **Both** select one or both outputs. With one selected, the main window and full screen show that monitor. With both selected, the native app uses a separate card window; the browser shows both pictures side by side. **F11** cycles these three views. Both is the default.
+
+The IIgs renderer runs normally every frame, independently of the card. The card monitor shows only its own VRAM and DAC output, including any IIgs picture captured and mirrored by its firmware. Hiding either monitor does not stop it. Closing the separate card window returns to the IIgs view.
+
+These options are grayed out when the machine has no **Second Sight (with Z180)**. They are remembered in app settings, just like Second Sight Text. Browser settings last until the page is reloaded. See [Second Sight](Cards_SecondSight.md) for card selection and the required ROM.
 
 ## Pixel Modes
 

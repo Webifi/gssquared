@@ -1,6 +1,11 @@
 #pragma once
 
+// Second Sight installs a callback for accesses on the slow Apple II bus,
+// supplied by the Mega II chip.
+#include <functional>
 #include "mmu.hpp"
+// Carry the original bank/select signals so the card can choose its copy bank.
+#include "megaii_bus.hpp"
 #include "mmu_iie.hpp"
 #include "iigs_shadow_flags.hpp"
 #include "iigs_aux_linear.hpp"
@@ -73,6 +78,10 @@ class MMU_IIgs : public MMU {
 
         //cpu_state *cpu = nullptr;
         NClock *clock = nullptr;
+        // Second Sight's host-thread observer may supply read data and return
+        // an RDY (Ready) delay: the card holds Ready low to make the Apple wait.
+        // The result counts 14.31818 MHz host-clock ticks, about 70 ns each.
+        std::function<uint64_t(megaii_transfer_t &)> megaii_observer;
 
     public:
         MMU_IIe *megaii = nullptr;
@@ -143,7 +152,24 @@ class MMU_IIgs : public MMU {
             else return megaii->read(address & 0xFFFF);
         } */
 
-        inline void megaiiWrite(uint32_t address, uint8_t value) { 
+        // Attach Second Sight on startup; pass an empty callback before shutdown.
+        void set_megaii_observer(std::function<uint64_t(megaii_transfer_t &)> observer) {
+            megaii_observer = std::move(observer);
+        }
+
+        // Report an original CPU address before completion; true means the card
+        // supplied value for a read. Any card delay advances the host clock.
+        bool observe_megaii(uint32_t address, uint8_t &value, bool read);
+        // Let Second Sight answer a read before falling back to Mega II decode.
+        uint8_t megaii_bus_read(uint32_t address);
+        // Let Second Sight accept a write before Mega II memory/switches change.
+        void megaii_bus_write(uint32_t address, uint8_t value);
+
+        // A shadow copy also reaches Second Sight. m2b0 is the original CPU
+        // bank bit, saved before soft switches redirected the RAM destination
+        // (Apple IIgs Technical Note 68, "The Mega II Bank 0 Signal").
+        inline void megaiiWrite(uint32_t address, uint8_t value, bool m2b0) {
+            observe_megaii((address & 0xffff) | (uint32_t(m2b0) << 16), value, false);
             if ((address & 0x1'0000) && g_bank_latch) {
                 uint32_t idx = address & 0x1'FFFF;
                 if (is_aux_linear()) {

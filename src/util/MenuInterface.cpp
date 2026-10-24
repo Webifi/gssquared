@@ -38,6 +38,52 @@ void MenuInterface::setMonitor(int monitor_id) {
 	pushMenuEvent(monitor_id);
 }
 
+// Second Sight firmware senses the selected cable: true means AppleColor RGB.
+// Store the choice for the next frame hook; firmware applies it at mode setup.
+void MenuInterface::setSecondSightMonitor(bool rgb) {
+	SystemSettings::instance().set_ss_rgb_monitor(rgb);
+}
+
+// Select the visible Second Sight/IIgs monitor arrangement without resetting chips.
+void MenuInterface::setSecondSightView(int view) {
+	SystemSettings::instance().set_ss_view(view);
+}
+
+// Store the next power-on firmware choice through the shared settings path.
+void MenuInterface::setSecondSightFirmware(int firmware) {
+	SystemSettings::instance().set_ss_firmware(firmware);
+}
+
+// Store the next power-on Lattice choice independently of firmware.
+void MenuInterface::setSecondSightLattice(bool v2) {
+	SystemSettings::instance().set_ss_lattice_v2(v2);
+}
+
+// Return the persisted option for menu checkmarks, which may await Restart.
+int MenuInterface::getSecondSightFirmware() {
+	return SystemSettings::instance().ss_firmware();
+}
+
+// Return the persisted chip option for menu checkmarks, which may await Restart.
+bool MenuInterface::getSecondSightLattice() {
+	return SystemSettings::instance().ss_lattice_v2();
+}
+
+// Enable Second Sight controls only while its independent display is installed.
+bool MenuInterface::hasSecondSightZ180() {
+	return computer_ && computer_->video_system && bool(computer_->video_system->additional_display);
+}
+
+// Supply the Second Sight cable checkmark from the saved monitor preference.
+bool MenuInterface::getSecondSightRGBMonitor() {
+	return SystemSettings::instance().ss_rgb_monitor();
+}
+
+// Supply the Second Sight view checkmark: IIgs=0, card=1, both=2.
+int MenuInterface::getSecondSightView() {
+	return SystemSettings::instance().ss_view();
+}
+
 void MenuInterface::openDebugWindow() { pushMenuEvent(MENU_OPEN_DEBUG_WINDOW); }
 
 void MenuInterface::diskToggle(storage_key_t key) {
