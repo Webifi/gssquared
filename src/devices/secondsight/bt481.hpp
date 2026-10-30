@@ -11,7 +11,7 @@
  *   Second Sight's normal rendering supplies zero on those inputs.
  *
  *   OTI087 owns this chip. Register accesses run on the card execution thread;
- *   main-thread rendering reads colors only after SSCard synchronizes. Palette
+ *   main-thread rendering reads colors while SSCard has stopped execution. Palette
  *   entries and access counters belong to the chip; VideoColor values are copies.
  *   Sources: Brooktree Bt481A datasheet L481A_C pp. 6-8 (palette and pixel
  *   formats), 14-20 (masks and command registers). The corresponding public
@@ -53,10 +53,48 @@ public:
     uint8_t vga_r(uint32_t rs, bool effects = true);
     // Write data through register-select pins 0-3, including hidden command access.
     void vga_w(uint32_t rs, uint8_t data);
+    // Palette RAM changes at the blue component; mask/command writes can
+    // change output immediately. Address and staging writes need no raster work.
+    bool display_write(uint8_t rs) const {
+        return (rs & 3) == 2 || ((rs & 3) == 1 && addr_rgb == 2);
+    }
     // Set the physical palette-width pin; high permits eight-bit components.
     void set_6_8_pin(bool state) { pin_6_8 = state; }
     // Read Command A without changing the hidden-access counter.
     uint8_t command_r() const { return cra; }
+    // Debugger copies of Command B and masks (Brooktree L481A_C pp. 14-20).
+    // These bypass the indirect-address and hidden-command read sequences.
+    uint8_t command_b() const { return indirect_read(2); }
+    uint8_t pixel_mask() const { return indirect_read(0); }
+    uint8_t overlay_pixel_mask() const { return overlay_mask; }
+    // Decode an explicit indirect index without selecting it or consuming DAC
+    // data. Both the mask port and passive observers use this map (L481A_C p. 14).
+    uint8_t indirect_read(unsigned offset) const {
+        switch (offset) {
+            case READ_MASK_REGISTER: return read_mask;
+            case OVERLAY_MASK_REGISTER: return overlay_mask_pending;
+            case COMMAND_REGISTER_B: return crb;
+            case CURSOR_REGISTER: return cursor;
+            default: return 0xff;
+        }
+    }
+    // Caller-owned copy of register-access sequencing for passive inspection.
+    // Read on the main thread while card execution is stopped; retaining the
+    // copy does not reserve or modify the live chip.
+    // L481A_C pp. 14-20 describes the shared address and component sequencing.
+    struct AccessState {
+        uint8_t pending_overlay_mask, address, component;
+        std::array<uint8_t, 3> staged_color;
+        uint8_t indirect_index, hidden_reads;
+        bool pin_6_8;
+        uint8_t cursor;
+    };
+    // Snapshot access counters/staged bytes without consuming a component or
+    // committing a pending mask.
+    AccessState access_state() const {
+        return {indirect_read(1), addr, addr_rgb, {color[0], color[1], color[2]},
+                indirect_index, hidden_reads, pin_6_8, indirect_read(3)};
+    }
     // Number of Oak input bytes consumed by each pixel in the selected format.
     unsigned bytes_per_pixel() const;
     // Number of input clocks per output pixel for Oak timing conversion.

@@ -35,7 +35,43 @@ void MenuInterface::setSpeed(int speed_id) {
 }
 
 void MenuInterface::setMonitor(int monitor_id) {
-	pushMenuEvent(monitor_id);
+	if (monitorAvailable(monitor_id)) pushMenuEvent(monitor_id);
+}
+
+// Second Sight shares the monitor menu with the built-in display. Disable
+// only choices whose required renderer is unavailable; monitor_id is a menu ID.
+bool MenuInterface::monitorAvailable(int monitor_id) {
+    return computer_ && computer_->video_system &&
+        (monitor_id != MONITOR_GS_COMPOSITE || computer_->video_system->gscomposite_allowed);
+}
+
+// Monitor controls are available only while their display belongs to the machine.
+bool MenuInterface::canAdjustMonitor(int monitor) {
+    return isEmulationRunning() && (monitor == SystemSettings::APPLE_MONITOR ||
+        ((monitor == SystemSettings::SS_VGA_MONITOR || monitor == SystemSettings::SS_RGB_MONITOR) && hasSecondSightZ180()));
+}
+
+// Return the shared label for a SystemSettings monitor index, or empty text
+// for an invalid index. The caller borrows static text on the UI thread.
+const char *MenuInterface::monitorAdjustmentName(int monitor) {
+    static const char *names[] = {"Apple monitor", "Second Sight VGA", "Second Sight RGB"};
+    return monitor >= 0 && monitor < SystemSettings::MONITOR_COUNT ? names[monitor] : "";
+}
+
+// Show the current size/position alongside each one-percent menu step.
+std::string MenuInterface::monitorAdjustmentLabel(int monitor, int action) {
+    static const char *labels[] = {"Narrower", "Wider", "Shorter", "Taller", "Left", "Right", "Up", "Down", "Reset"};
+    if (action == 8) return labels[action];
+    const auto &knobs = SystemSettings::instance().monitor_adjustment(static_cast<SystemSettings::Monitor>(monitor));
+    int value = knobs.steps[action / 2] + (action < 4 ? 100 : 0);
+    return std::string(labels[action]) + " (" + std::to_string(value) + "%)";
+}
+
+// Apply a menu step to the selected host monitor and save it. action is one
+// of the eight size/position steps or Reset (8); card registers are untouched.
+void MenuInterface::adjustMonitor(int monitor, int action) {
+    if (canAdjustMonitor(monitor))
+        SystemSettings::instance().adjust_monitor(static_cast<SystemSettings::Monitor>(monitor), action);
 }
 
 // Second Sight firmware senses the selected cable: true means AppleColor RGB.

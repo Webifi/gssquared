@@ -20,7 +20,8 @@
 
 // Plain data shared at a host/card hand-off; no pointers into IIgs memory.
 struct megaii_transfer_t {
-    // Absolute ticks of the 14.31818 MHz host clock (about 70 ns each).
+    // First physical data-phase fall, in absolute 14.31818 MHz host ticks.
+    // RDY retries use the continuing 14/16-tick motherboard slot periods.
     uint64_t ticks = 0;
     // Low 16 address pins of this Apple access.
     uint16_t address = 0;

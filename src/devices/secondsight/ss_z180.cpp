@@ -22,6 +22,8 @@
 #include "videosystem.hpp"
 #include "util/DebugHandlerIDs.hpp"
 #include "util/ResourceFile.hpp"
+#include <atomic>
+#include <memory>
 #include <stdexcept>
 #include <filesystem>
 #include <fstream>
@@ -39,6 +41,8 @@ struct secondsight_z180_state_t {
     bool lattice_v2 = false;
     std::string eeprom_path;
     std::array<uint16_t, 64> eeprom_initial;
+    // Card for the clock's Mega II cycle hook; cleared before the card goes.
+    std::shared_ptr<std::atomic<SSCard *>> time_target;
 };
 
 // Restore the serial EEPROM words without clocking its serial interface.
@@ -123,44 +127,65 @@ void init_secondsight_z180(computer_t *computer, SlotType_t slot) {
     st->firmware = settings.ss_firmware();
     st->lattice_v2 = settings.ss_lattice_v2();
     st->card = std::make_unique<SSCard>(image.get(), computer->clock->get_c14m_per_second(),
-                                      st->lattice_v2 ? SSCapture::LatticeMap::V2 : SSCapture::LatticeMap::BE8C);
+                                      st->lattice_v2 ? SSCapture::LatticeMap::V2 : SSCapture::LatticeMap::BE8C,
+                                      SSCard::Presentation::Latest);
     st->rgb_monitor = SystemSettings::instance().ss_rgb_monitor();
     st->card->video().monitor_type_w(st->rgb_monitor);
     if (computer->get_config_path().empty()) Paths::calc_pref(st->eeprom_path, "secondsight.eeprom");
     else st->eeprom_path = computer->get_config_path() + ".secondsight.eeprom";
     secondsight_load_eeprom(st);
+    // The card worker records IRQ edges; this callback runs on the host
+    // when they are delivered. Relaxed synchronization can make that delivery
+    // later than the card-edge timestamp; the IIgs CPU is not rewound.
     st->card->irq_handler = [computer, slot](bool asserted) {
         computer->irq_control->set_irq((device_irq_id)slot, asserted);
     };
+    // RDY progress advances motherboard devices on the host thread while
+    // the 65816 retains its current access. It does not deliver card IRQs.
+    st->card->held_progress = [mmu](uint64_t ticks) { mmu->advance_megaii_hold(ticks); };
+    st->card->host_clock_ticks = [clock = computer->clock] { return clock->get_c14m(); };
     st->card->start_worker();
     computer->set_module_state(MODULE_SECOND_SIGHT_Z180, st->card.get());
+    // Every Mega II access before the current cycle has been observed, so
+    // the card thread may run up to this time without waiting for a request.
+    st->time_target = std::make_shared<std::atomic<SSCard *>>(st->card.get());
+    computer->clock->set_cycle_handler([target = st->time_target, clock = computer->clock] {
+        if (SSCard *card = target->load(std::memory_order_relaxed))
+            card->publish_time(clock->get_c14m());
+    });
 
     // M2B0 is the original Apple bank bit, needed to distinguish main and
-    // auxiliary video writes. ROM 01 exposes it only in slot 3; ROM 03 also
-    // provides it in the other slots (Apple IIgs Hardware Reference, expansion
-    // slots; Technical Note 68 describes the original slot-3 restriction).
+    // auxiliary video writes. ROM 01 exposes it only in slot 3 (Technical
+    // Note 68); ROM 03 in slots 1-6. Slot 7's pin 35 carries CREF instead
+    // (Hardware Reference p. 176; Second Sight manual p. 30: slots 1-6).
     mmu->set_megaii_observer([st, mmu, slot](megaii_transfer_t &transfer) {
-        if (!mmu->is_rom03_machine() && slot != SLOT_3)
+        if (mmu->is_rom03_machine() ? slot == SLOT_7 : slot != SLOT_3)
             transfer.m2b0 = false;
         return st->card->observe(transfer);
     });
 
-    // Bring the card to the host frame boundary before SDL reads its pixels.
-    // This is also where a monitor choice becomes a cable-sense input. The
+    // Offer the current card scan while the Apple picture is drawn. Inspection
+    // and stepping retain exact fences. This is also where a monitor choice
+    // becomes a cable-sense input. The
     // firmware samples it when setting a mode, so it cannot rescale an active
     // mode immediately (ROM_BEEF.asm monitor/mode initialization).
     computer->device_frame_dispatcher->registerHandler([st, computer]() {
-        st->card->catch_up(computer->clock->get_c14m());
+        // SecondSightDisplay claims stopped Oak state or reuses its previous
+        // texture. Stepping may skip rendering and therefore synchronizes here.
+        st->card->request_presentation(computer->clock->get_c14m(), computer->execution_mode != EXEC_NORMAL);
         const bool rgb = SystemSettings::instance().ss_rgb_monitor();
         if (st->rgb_monitor != rgb) {
+            // A changed cable sense is an input at this host time, including
+            // paused/stepping frames whose presentation may be skipped.
+            st->card->catch_up(computer->clock->get_c14m());
             st->rgb_monitor = rgb;
             st->card->video().monitor_type_w(rgb);
             computer->event_queue->addEvent(new Event(EVENT_SHOW_MESSAGE, 0,
-                "Second Sight monitor changed; takes effect at the next card mode change or Restart"));
+                "Second Sight monitor changed; if blank, change mode or Restart"));
         }
         return true;
     });
-    st->display = std::make_unique<SecondSightDisplay>(computer, st->card->video());
+    st->display = std::make_unique<SecondSightDisplay>(computer, *st->card);
     // Replacing ROM or capture equations requires a card power cycle. An
     // ordinary Apple reset preserves the U7 Lattice chip and captured RAM.
     computer->register_reset_handler([st, computer](bool cold_start) {
@@ -182,11 +207,10 @@ void init_secondsight_z180(computer_t *computer, SlotType_t slot) {
     // Stop new bus submissions first, finish work, detach the display, then
     // save EEPROM while the chip still exists. Deleting st joins its worker.
     computer->register_shutdown_handler([st, computer, mmu]() {
-        // M2B0 is the original Apple bank bit, needed to distinguish main and
-    // auxiliary video writes. ROM 01 exposes it only in slot 3; ROM 03 also
-    // provides it in the other slots (Apple IIgs Hardware Reference, expansion
-    // slots; Technical Note 68 describes the original slot-3 restriction).
+        // Detach both host inputs before destroying the card. The clock
+        // retains its callback, so its shared target must become null.
     mmu->set_megaii_observer({});
+        st->time_target->store(nullptr, std::memory_order_relaxed);
         st->card->catch_up(computer->clock->get_c14m());
         computer->set_module_state(MODULE_SECOND_SIGHT_Z180, nullptr);
         st->display.reset();

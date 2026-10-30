@@ -29,9 +29,12 @@ and you can skip the `EM_CACHE` step.)
 ## Configure and build
 
 ```bash
-emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release
+emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DGS2_WEB_DEBUG=OFF
 cmake --build build-web --target GSSquared -j
 ```
+
+`GS2_WEB_DEBUG` defaults to `ON` and enables diagnostic symbols and runtime
+assertions. Set it to `OFF` as above for the release build.
 
 This produces, in `build-web/`:
 

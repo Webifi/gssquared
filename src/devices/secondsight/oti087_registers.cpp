@@ -41,8 +41,7 @@ constexpr unsigned bit(uint32_t value, unsigned n) {
 // 17 sync/address controls; 18 split-screen line; 24 attribute access phase.
 // Retrace is the interval used to return the monitor beam. Pan shifts the
 // displayed origin within a row. Overflow registers hold upper counter bits.
-uint8_t OTI087::crtc_read() const {
-    unsigned offset = crtc.index;
+uint8_t OTI087::crtc_read(unsigned offset) const {
     switch (offset) {
         case 0x00: {
             return crtc.horz_total & 0xff;
@@ -113,6 +112,9 @@ uint8_t OTI087::crtc_read() const {
             return (crtc.cursor_addr >> ((offset & 1) ^ 1) * 8) & 0xff;
         }
         case 0x10: {
+            // Convention: no EGA light-pen alias when CRTC03 bit7 is clear.
+            // Return programmed 10/11 at every beam position. Second Sight
+            // reference, docs/14-custom-code.md, "The current line" (s122/123).
             return crtc.vert_retrace_start & 0xff;
         }
         case 0x11: {
@@ -139,7 +141,7 @@ uint8_t OTI087::crtc_read() const {
             return crtc.vert_blank_start & 0xff;
         }
         case 0x16: {
-            return crtc.vert_blank_end & 0x7f;
+            return crtc.vert_blank_end & 0xff;
         }
         case 0x17: {
             uint8_t res = (crtc.sync_en & 1) << 7;
@@ -330,7 +332,7 @@ void OTI087::crtc_write(uint8_t data) {
             break;
         }
         case 0x16: {
-            crtc.vert_blank_end = (crtc.vert_blank_end & ~0x7f) | (data & 0x7f);
+            crtc.vert_blank_end = data;
 
             break;
         }
@@ -364,8 +366,7 @@ void OTI087::crtc_write(uint8_t data) {
 // odd/even reads (4), CGA shift (5), 256-color shift (6); 06 graphics/text
 // (0), odd/even chaining (1), CPU window (3:2); 07 compare-plane enables
 // (3:0); 08 per-pixel bit mask (7:0). Unimplemented indices read as $FF.
-uint8_t OTI087::gc_read() const {
-    unsigned offset = gc.index;
+uint8_t OTI087::gc_read(unsigned offset) const {
     switch (offset) {
         case 0x00: {
             return gc.set_reset & 0xf;
@@ -460,6 +461,8 @@ void OTI087::gc_write(uint8_t data) {
         default:
             break;
     }
+    gc.plain_write = gc.write_mode == 0 && !gc.enable_set_reset && !gc.rotate_count &&
+                     !gc.logical_op && gc.bit_mask == 0xff;
 }
 
 // Convert CRTC Offset to the active byte/word/dword address stride.
@@ -476,31 +479,7 @@ uint16_t OTI087::offset() const {
 // Compute a plane write from the retained read latch and current VGA write
 // mode; a masked bit retains the latch value, not the incoming CPU byte.
 uint8_t OTI087::vga_latch_write(int offs, uint8_t data) {
-    uint8_t res = 0;
-
-    // offs is plane 0-3. Mode 0 rotates CPU data and optionally substitutes
-    // set/reset color. Mode 1 copies the old read latch. Mode 2 expands one
-    // CPU bit to the whole plane byte. Mode 3 uses rotated CPU data as an
-    // extra mask for set/reset color (IBM VGA/XGA TRM pp. 2-83 to 2-89).
-    switch (gc.write_mode & 3) {
-        case 0:
-            data = rotate_right(data);
-            if (gc.enable_set_reset & 1 << offs)
-                res = vga_logical_op((gc.set_reset & 1 << offs) ? gc.bit_mask : 0, offs, gc.bit_mask);
-            else
-                res = vga_logical_op(data, offs, gc.bit_mask);
-            break;
-        case 1:
-            res = gc.latch[offs];
-            break;
-        case 2:
-            res = vga_logical_op((data & 1 << offs) ? 0xff : 0x00, offs, gc.bit_mask);
-            break;
-        case 3:
-            data = rotate_right(data);
-            res = vga_logical_op((gc.set_reset & 1 << offs) ? 0xff : 0x00, offs, data & gc.bit_mask);
-            break;
-    }
-
-    return res;
+    // The IBM and Oak wide-latch paths use the same equations; only the
+    // saved byte differs (IBM VGA/XGA TRM pp. 2-83 to 2-89).
+    return vga_write_byte(offs, data, gc.latch[offs]);
 }

@@ -955,9 +955,16 @@ int Z180::take_trap(bool third) {
     }
     if (third)
         RM(ea); // The indexed operand read precedes the trap (Figure 33).
-    if (!cycle_executing || !trap_started) {
+    // The test executor may re-enter after a bus edge; publish trap status
+    // only once. Production retains the active instruction call stack.
+#ifdef GS2_SS_TESTING
+    if (!cycle_executing || !trap_started)
+#endif
+    {
         itc = (itc & ~Z180_ITC_UFO) | Z180_ITC_TRAP | (third ? Z180_ITC_UFO : 0);
+#ifdef GS2_SS_TESTING
         trap_started = true;
+#endif
     }
     pc16 = previous_pc + (third ? 2 : 1);
     PUSH(PC);

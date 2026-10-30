@@ -213,6 +213,9 @@ function(configure_sdl_builds)
         set(SDL_SHARED OFF)
         set(SDL_STATIC ON)
         set(SDL_TEST OFF)
+        # The web executable already requires pthreads and cross-origin isolation.
+        # SDL defaults them off on Emscripten, even when the compiler uses -pthread.
+        set(SDL_PTHREADS ON CACHE BOOL "Use POSIX threads for multi-threading" FORCE)
         set(SDLIMAGE_VENDORED ON)
         set(SDLTTF_VENDORED ON)
         # We only need PNG (atlas / IBM_VGA font). Disable the heavy optional
@@ -270,9 +273,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 if(EMSCRIPTEN)
     add_compile_options(-pthread)
     add_link_options(-pthread)
-    # Second Sight pauses Z180 instructions with setjmp/longjmp and uses C++
-    # errors for failed card jobs. Keep both mechanisms in WebAssembly; SIMD
-    # supplies the vector pixel conversions in the card renderer.
+    # Enable WebAssembly C++ exception and longjmp support; SIMD supplies
+    # vector pixel conversions in the card renderer.
     add_compile_options(-msimd128 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
     add_link_options(-msimd128 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
 endif()
@@ -676,7 +678,7 @@ endif()
 target_link_libraries(gs2_util PUBLIC gs2_serial_devices ${GS2_SDL3} ${GS2_SDL3_TTF})
 target_link_libraries(gs2_computer ${GS2_SDL3_TTF})
 target_link_libraries(gs2_cpu gs2_trace)
-target_link_libraries(gs2_mmu gs2_trace gs2_cpu)
+target_link_libraries(gs2_mmu gs2_trace gs2_cpu gs2_util)
 target_link_libraries(gs2_devices_adb gs2_util)
 target_link_libraries(gs2_devices_iwm gs2_devices_floppy_woz)
 target_link_libraries(gs2_devices_diskii_woz gs2_devices_floppy_woz gs2_util)
@@ -832,9 +834,21 @@ if(NOT EMSCRIPTEN)
     add_subdirectory(apps/gs2packtest)
 
     add_subdirectory(apps/ssgputexttest)
+    # Exact half-clock fixtures need the reference continuation, which is not
+    # part of the production worker. Keep its different class layout isolated.
+    add_library(gs2_devices_secondsight_test
+        src/devices/secondsight/ss_card.cpp
+        src/devices/secondsight/z180/Z180.cpp
+        src/devices/secondsight/z180/Z180ASCI.cpp
+        src/devices/secondsight/z180/Z180CSIO.cpp)
+    target_compile_definitions(gs2_devices_secondsight_test PUBLIC GS2_SS_TESTING)
+    target_link_libraries(gs2_devices_secondsight_test PUBLIC gs2_devices_secondsight)
     # Build maintainer checks for Second Sight reset and clock contracts.
     add_subdirectory(apps/sscardtest)
     add_subdirectory(apps/ssclocktest)
+    add_subdirectory(apps/ssoaktest)
+    # Verify CRT presentation from the original card firmware's mode timings.
+    add_subdirectory(apps/ssgeometrytest)
 endif()
 
 ################################################################################

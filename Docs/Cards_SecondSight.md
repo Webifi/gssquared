@@ -16,7 +16,7 @@ The built-in IIgs machines use the simulated card. Choose one version per machin
 3. Click **slot 3** and pick **Second Sight (with Z180)**, or **Second Sight** for the simulated card.
 4. Save and launch.
 
-The real card can use slots 1–7; slot 3 is the usual choice. The simulated card and the Video Overlay Card use slot 3.
+On a ROM 03 IIgs the real card works in slots 1–6, and on a ROM 01 IIgs only in slot 3 (Second Sight manual, p. 30). Slot 3 is the usual choice. The simulated card and the Video Overlay Card use slot 3.
 
 The card firmware is included in the application resources, on native platforms and in the browser.
 
@@ -56,8 +56,8 @@ power-on or **Machine → Restart**; Reset leaves the running card unchanged.
 | Firmware option | Included ROM |
 |---|---|
 | 1.4-BEEF (original), the default | `ROM_BEEF.bin` |
-| 1.5-B5CB | `ROM_B5CB.bin` |
-| 2.0-1C46 | `ROM_1C46.bin` |
+| 1.5-CBFC | `ROM_CBFC.bin` |
+| 2.0-3277 | `ROM_3277.bin` |
 
 The Lattice chip options are **Original (BE8C)** and **v2.0 (BBB1)**. Every
 firmware/chip pairing can run. Firmware 1.5 is intended for the original Lattice
@@ -67,10 +67,16 @@ other choice intact. The defaults are 1.4-BEEF and Original (BE8C).
 The Lattice chip is the square 44-pin socketed chip at the right end of the
 card, above the slot connector. The original has a white BE8C sticker.
 
-The 1.5-B5CB and 2.0-1C46 builds split uploads at the 512 KB video-memory
+The 1.5-CBFC and 2.0-3277 builds split uploads at the 512 KB video-memory
 boundary and use level-sensed DMA for the second piece. They also keep Apple
-display switches from resetting a native video mode. The original 1.4 image
-is unchanged.
+display switches from resetting a native video mode. SetPalette preserves the
+user font when font 3 is selected by using the command buffer at SRAM `$0A600`.
+With fonts 0, 1 or 2, it uses `$0F000–$0F2FF`, as firmware 1.4 does. The original
+1.4 image is unchanged. These builds acknowledge a mode-change command after
+its pending mode change is applied, so an interrupt during the main loop cannot
+leave the previous mode active.
+AppleColor RGB double hires (mode `$FA`) uses 260 lines at 59.9 Hz in these
+builds, correcting the 222-line, 70.2 Hz timing (firmware fault E30).
 
 The original Lattice chip reproduces the factory BE8C map, including its
 hardware faults. Lattice v2.0 corrects direct bank-1 capture with RAMWRT on,

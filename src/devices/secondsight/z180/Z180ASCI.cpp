@@ -20,8 +20,7 @@
  *   Each channel belongs to Z180 and runs only on its execution thread.
  *   Second Sight uses K silicon, with one receive byte; N silicon has four.
  *   Sources: Zilog UM005004-0918 pp. 116-146 (ASCI) and Zilog TN0053 p. 3
- *   (K/N receive buffering and error recovery). Timer parking is a software
- *   shortcut for an unchanged high receive pin, not a hardware stop mode.
+ *   (K/N receive buffering and error recovery).
  */
 
 #include "Z180ASCI.hpp"
@@ -125,24 +124,9 @@ void Z180ASCI::update_clock() {
     transmit_timer.adjust(Z180Time::never);
     rx_state = STATE_START;
     rx_count_to = 1;
-    receive_parked = false;
     if (!sample_rate.is_never()) {
         receive_timer.adjust(sample_rate, 0, sample_rate);
-        if (rxa)
-            park_receive_clock();
     }
-}
-
-// Suppress repeated high-input samples while preserving their phase; a low RXA edge wakes them.
-void Z180ASCI::park_receive_clock() {
-    if (!idle_receive_clock_gating || sample_rate.seconds() || !sample_rate.attoseconds())
-        return;
-    // In STATE_START, sampling a high RXA has no observable effect, even
-    // with RE enabled. Keep the divider phase and wake on the next low edge.
-    // This also avoids millions of no-op timer callbacks on an unwired RXA.
-    receive_epoch = now();
-    receive_parked = true;
-    receive_timer.adjust(Z180Time::never);
 }
 
 // Return control A, including the received multiprocessor bit (UM0050 pp. 125-129).
@@ -325,28 +309,10 @@ void Z180ASCI::dcd_wr(int state) {
     }
 }
 
-// Set receive-pin level state (0/1). A falling start edge restarts any parked sample clock.
+// Set the receive-pin level (0/1); the receiver samples it on its clock.
 void Z180ASCI::rxa_wr(int state) {
     rxa = state;
-    if (!state && receive_parked) {
-        // Exact integer phase modulo the timer's rounded attosecond period.
-        // Reduce the seconds separately so long idle intervals cannot overflow.
-        const Z180Time elapsed = now() - receive_epoch;
-        const uint64_t period = sample_rate.attoseconds();
-        uint64_t remainder = elapsed.attoseconds() % period;
-        uint64_t seconds = elapsed.seconds();
-        uint64_t add = Z180Time::units_per_second % period;
-        // Binary modular multiplication adds the whole-second contribution
-        // without forming seconds * 10^18. Each pass removes one binary digit.
-        while (seconds) {
-            if (seconds & 1)
-                remainder = (remainder + add) % period;
-            add = (add + add) % period;
-            seconds >>= 1;
-        }
-        receive_parked = false;
-        receive_timer.adjust(Z180Time(0, period - remainder), 0, sample_rate);
-    }
+
 }
 
 // Apply external clock level state (0/1). Falling edges clock transmit; rising
@@ -583,11 +549,9 @@ void Z180ASCI::reset() {
         asci_stat = Z180_STAT_TDRE;
     }
 }
-// Service one internal sample deadline, then park only an idle high input.
+// Service one internal receive sample deadline.
 void Z180ASCI::receive_clock() {
     receive_edge();
-    if (rx_state == STATE_START && rxa)
-        park_receive_clock();
 }
 // Change only interrupt enables and channel 1 CTS selection from data; preserve hardware status (pp. 135-139).
 void Z180ASCI::stat_w(uint8_t data) {

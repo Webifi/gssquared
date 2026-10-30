@@ -307,7 +307,7 @@ static void build_menu_bar()
         if (begin_menu("Second Sight")) {
             ImGui::MenuItem("Applies at power-on or Restart", nullptr, false, false);
             if (begin_menu("Firmware")) {
-                const char *labels[] = { "1.4-BEEF (original)", "1.5-B5CB", "2.0-1C46" };
+                const char *labels[] = { "1.4-BEEF (original)", "1.5-CBFC", "2.0-3277" };
                 for (int i = 0; i < 3; ++i)
                     if (ImGui::MenuItem(labels[i], nullptr, mi->getSecondSightFirmware() == i))
                         mi->setSecondSightFirmware(i);
@@ -357,8 +357,22 @@ static void build_menu_bar()
             };
             for (auto &m : monitors) {
                 bool checked = (cur_mon == m.id);
-                if (ImGui::MenuItem(m.label, nullptr, checked))
+                if (ImGui::MenuItem(m.label, nullptr, checked, mi->monitorAvailable(m.id)))
                     mi->setMonitor(m.id);
+            }
+            end_menu();
+        }
+
+        // Host monitor knobs share the saved settings and labels on every platform.
+        if (begin_menu("Monitor adjust")) {
+            for (int monitor = 0; monitor < SystemSettings::MONITOR_COUNT; ++monitor) {
+                if (begin_menu(mi->monitorAdjustmentName(monitor), mi->canAdjustMonitor(monitor))) {
+                    for (int action = 0; action < 9; ++action) {
+                        const std::string label = mi->monitorAdjustmentLabel(monitor, action);
+                        if (ImGui::MenuItem(label.c_str())) mi->adjustMonitor(monitor, action);
+                    }
+                    end_menu();
+                }
             }
             end_menu();
         }

@@ -52,6 +52,7 @@
 #include "devices/displaypp/AppleIIgsColors.hpp"
 
 #include "util/DebugHandlerIDs.hpp"
+#include "util/SystemSettings.hpp"
 
 /*
 Index by scanner
@@ -157,19 +158,20 @@ bool update_display_apple2_cycle(display_state_t *ds) {
     ii_frame_src.w += (float)ds->hsize*2;
     ii_frame_src.h += (float)ds->vsize*2;
 
-    // TODO: content_inset offsets are fixed for default hpos/vpos/hsize/vsize (all zero).
-    // ii_frame_src above shifts/expands the source crop, so guest content moves within
-    // that rect; render_frame scales w/h from the adjusted srcrect but still applies
-    // these fixed x/y offsets. When monitor H/V calibration is non-zero, GS/OS mouse
-    // tracking (vs->content via content_inset) will misalign unless inset x/y are
-    // adjusted too, e.g. x += hsize - hpos, y += vsize - vpos (w/h unchanged).
+    // Move only the host's visible window. Defaults retain the existing crop;
+    // size/position controls never change scanner clocks or generated pixels.
+    const auto &knobs = SystemSettings::instance().monitor_adjustment(SystemSettings::APPLE_MONITOR);
+    knobs.apply(ii_frame_src.x, ii_frame_src.y, ii_frame_src.w, ii_frame_src.h);
     static constexpr SDL_FRect ii_content_inset = { 42.0f, 19.0f, 560.0f, 192.0f };
     static constexpr SDL_FRect shr_content_inset = { 48.0f, 19.0f, 640.0f, 200.0f };
-    const SDL_FRect &content_inset =
-        (ds->new_video & 0x80) ? shr_content_inset : ii_content_inset;
+    SDL_FRect content_inset = (ds->new_video & 0x80) ? shr_content_inset : ii_content_inset;
+    const auto &base = content_rec_vsg2[ds->video_scanner_type][(ds->new_video & 0x80) ? 1 : 0];
+    // Mouse coordinates must follow the active picture inside the adjusted crop.
+    content_inset.x += base.x - ii_frame_src.x;
+    content_inset.y += base.y - ii_frame_src.y;
 
     SDL_SetTextureColorMod(frame_tex, tint.r, tint.g, tint.b);
-    ds->video_system->render_frame(frame_tex, &ii_frame_src, nullptr, true, &content_inset);
+    ds->video_system->render_frame(frame_tex, &ii_frame_src, nullptr, true, &content_inset, knobs.steps != std::array<int, MonitorAdjustment::COUNT>{});
 
     return true;
 }
@@ -952,7 +954,6 @@ void init_mb_device_display_common(computer_t *computer, SlotType_t slot, bool c
     SDL_SetTextureBlendMode(ds->frame_vsg->get_texture(), SDL_BLENDMODE_NONE);
 
     ds->is_iigs = platform_is_iigs(computer->platform->id);
-    vs->gscomposite_allowed = ds->is_iigs;
 
     // Apple II composite decodes FrameBits (IIgs borders draw black); IIgs GS Composite
     // and Monochrome encode and decode the RGB frame.
@@ -969,6 +970,12 @@ void init_mb_device_display_common(computer_t *computer, SlotType_t slot, bool c
             printf("NTSC shader: frame texture creation failed (%s); using CPU decoder\n", SDL_GetError());
         }
     }
+
+    // Advertise only fully initialized effects. CPU composite/monochrome still
+    // work if a shader or render target is missing; do not alter saved preferences.
+    vs->gscomposite_allowed = ds->is_iigs && ds->frame_ntsc && vs->get_gscomposite_gpu();
+    vs->mono_persistence_ready = ds->persist != nullptr;
+    if (!vs->mono_persistence_ready) vs->mono_persistence_enabled = false;
 
     // set in CPU so we can reference later
     computer->set_module_state(MODULE_DISPLAY, ds);

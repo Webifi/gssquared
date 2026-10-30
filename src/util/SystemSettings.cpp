@@ -47,6 +47,25 @@ EM_JS(void, save_second_sight_options, (int options), {
 });
 #endif
 
+// Stable preference keys shared with browser local storage; not machine config.
+static constexpr const char *monitor_keys[] = {"apple", "ss_vga", "ss_rgb"};
+static constexpr const char *monitor_controls[] = {"hsize", "vsize", "hpos", "vpos"};
+#ifdef __EMSCRIPTEN__
+// Browser settings files are session-local. Store only the small knob record,
+// allowing denied storage or malformed values to fall back to zero defaults.
+EM_JS(int, load_monitor_adjustment, (const char *monitor, int control), {
+    try {
+        const value = JSON.parse(localStorage.getItem('gs2.monitor.' + UTF8ToString(monitor)))[control];
+        return Number.isInteger(value) && value >= -20 && value <= 20 ? value : 0;
+    } catch (e) { return 0; }
+});
+EM_JS(void, save_monitor_adjustment, (const char *monitor, const int *values), {
+    try { localStorage.setItem('gs2.monitor.' + UTF8ToString(monitor),
+        JSON.stringify(Array.from(HEAP32.subarray(values >> 2, (values >> 2) + 4)))); }
+    catch (e) {}
+});
+#endif
+
 namespace {
 
 int64_t now_unix_seconds() {
@@ -160,6 +179,14 @@ bool SystemSettings::load() {
 #endif
     mono_persistence_ = true;
     scaling_sharp_ = false;
+    // Each host monitor starts at its calibrated framing; the browser keeps
+    // these small preferences in local storage between page loads.
+    monitor_adjustments_ = {};
+#ifdef __EMSCRIPTEN__
+    for (int m = 0; m < MONITOR_COUNT; ++m)
+        for (int c = 0; c < MonitorAdjustment::COUNT; ++c)
+            monitor_adjustments_[m].steps[c] = load_monitor_adjustment(monitor_keys[m], c);
+#endif
     last_config_path_.clear();
     last_disk_path_.clear();
     host_fst_dir_.clear();
@@ -235,6 +262,11 @@ bool SystemSettings::load() {
             ss_rgb_monitor_ = (*display)["ss_rgb_monitor"].value_or(false);
             ss_view_ = (*display)["ss_view"].value_or(SS_VIEW_BOTH);
             if (ss_view_ < SS_VIEW_IIGS || ss_view_ >= SS_VIEW_COUNT) ss_view_ = SS_VIEW_BOTH;
+            // Missing records preserve the calibrated crop; reject excessive values.
+            for (int m = 0; m < MONITOR_COUNT; ++m)
+                if (const auto *knobs = (*display)[monitor_keys[m]].as_table())
+                    for (int c = 0; c < MonitorAdjustment::COUNT; ++c)
+                        monitor_adjustments_[m].steps[c] = std::clamp((*knobs)[monitor_controls[c]].value_or(0), -20, 20);
             mono_persistence_ = (*display)["mono_persistence"].value_or(true);
             if (const auto s = (*display)["scaling"].value<std::string>()) {
                 scaling_sharp_ = (*s == "sharp");
@@ -316,6 +348,16 @@ bool SystemSettings::save() const {
     display.insert("ss_view", ss_view_);
     display.insert("mono_persistence", mono_persistence_);
     display.insert("scaling", scaling_sharp_ ? "sharp" : "smooth");
+    // Keep monitor calibration with the other display preferences, not .gs2 cards.
+    for (int m = 0; m < MONITOR_COUNT; ++m) {
+        toml::table knobs;
+        for (int c = 0; c < MonitorAdjustment::COUNT; ++c)
+            knobs.insert(monitor_controls[c], monitor_adjustments_[m].steps[c]);
+        display.insert(monitor_keys[m], std::move(knobs));
+#ifdef __EMSCRIPTEN__
+        save_monitor_adjustment(monitor_keys[m], monitor_adjustments_[m].steps.data());
+#endif
+    }
     table.insert("display", std::move(display));
 
     toml::table file_dialogs;
@@ -411,8 +453,8 @@ void SystemSettings::set_ss_text_mode(bool enabled) {
 // Select the EPROM resource independently of the Lattice-chip preference.
 const char *SystemSettings::ss_rom_filename() const {
     switch (ss_firmware_) {
-    case SS_FW_15: return "ROM_B5CB.bin";
-    case SS_FW_20: return "ROM_1C46.bin";
+    case SS_FW_15: return "ROM_CBFC.bin";
+    case SS_FW_20: return "ROM_3277.bin";
     default: return "ROM_BEEF.bin";
     }
 }
@@ -443,6 +485,19 @@ void SystemSettings::set_ss_view(int view) {
     if (view < SS_VIEW_IIGS || view >= SS_VIEW_COUNT || ss_view_ == view) return;
     ss_view_ = view;
     save();
+}
+
+// Menu actions are smaller/larger for H-size, V-size, H-position, V-position,
+// followed by Reset (8). Clamp each value to twenty one-percent steps from
+// the calibrated framing. Ignore invalid monitor/action indices. Save only
+// changes; these main-thread preferences do not alter Second Sight registers.
+void SystemSettings::adjust_monitor(Monitor monitor, int action) {
+    if (monitor < 0 || monitor >= MONITOR_COUNT || action < 0 || action > 8) return;
+    auto &steps = monitor_adjustments_[monitor].steps;
+    const auto previous = steps;
+    if (action == 8) steps = {};
+    else steps[action / 2] = std::clamp(steps[action / 2] + (action % 2 ? 1 : -1), -20, 20);
+    if (steps != previous) save();
 }
 
 void SystemSettings::set_mono_persistence(bool enabled) {

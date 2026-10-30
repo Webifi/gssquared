@@ -5,8 +5,9 @@
  *   must interpret a soft-switch change or host command. A soft switch is an
  *   Apple address whose read or write changes a hardware setting.
  *
- *   SSCard calls transfer() to decide what the access needs, waits if needed,
- *   then calls complete() to load the U2 Apple data-in latch. A latch holds a
+ *   SSCard calls transfer() to decode an access, then phase() at Apple bus
+ *   clock and acknowledgement edges. These load the U2 Apple data-in latch
+ *   and retain a pending event across any wait. A latch holds a
  *   byte until another load. The U17 copy controller writes captured bytes
  *   to card RAM; the firmware reads event addresses through Z180 ports.
  *
@@ -62,8 +63,72 @@ public:
     bool pending = false;
     // Bits 0-7 track writes to $2000-$9FFF in 4 KiB bands, including super-high-resolution (SHR) control/palette bytes.
     uint8_t bands = 0;
+    // The band of a copy whose PH0-high window is open. The chip sets a band
+    // flag as a level while CAPTURE and PH0 are high, so a $A4/$A5 read in
+    // that window returns 1 and leaves it set (v2.0 LDF 576-582, 634-640).
+    uint8_t window_bands = 0;
     uint8_t event_address = 0;
     uint8_t host_input = 0;
+
+    // These are feedback latches, not a pending-event shortcut for RDY.
+    // Original BE8C LDF 424-445 (v2.0 LDF 479-500 uses the same equations):
+    // PH0 is the Apple bus clock; ACK is the Z180 host acknowledgement.
+    // IRQ_PENDING holds a firmware event, RUN allows another capture, and
+    // STALL holds Apple RDY low. ACK clears IRQ_PENDING, RUN recovers in
+    // PH0 low, and STALL releases
+    // on the next PH0 high. The host accepts only the subsequent eligible fall.
+    bool run = true, stall = false, event_latch = false;
+    bool data_in_active = false, catch_active = false;
+
+    // Changes returned by value to SSCard on the card thread. copy starts
+    // a U17 copy controller grant; event counts a newly latched request;
+    // interrupt tells SSCard to update the Z180 INT1 and DREQ1 input levels.
+    struct Edge {
+        bool copy = false;
+        bool event = false;
+        bool interrupt = false;
+    };
+
+    // Apply a PH0 or ACK edge with the retained address/data and decoded
+    // inputs. Parallel feedback evaluation preserves the recovered equations;
+    // it is Boolean settling, not a host wait or a gate propagation model.
+    Edge phase(const ss_mega_transfer_t &t, const ss_capture_result_t &decode, bool ph0, bool ack) {
+        const bool old_event = event_latch, old_pending = pending;
+        // Evaluate all feedback terms from the same previous state. Stop
+        // only when another pass would change none of the retained levels.
+        for (;;) {
+            const bool next_run = (!pending && !ack && !ph0) || (!pending && run) ||
+                                  (!decode.event && run && !decode.copy) || (run && !decode.copy && !ph0);
+            const bool next_pending = (!ack && pending) || (!ack && !ph0 && event_latch);
+            const bool next_stall = !run || (!ph0 && stall);
+            const bool next_event = (event_latch && !ack && !ph0) || (event_latch && !pending && !ack) ||
+                                    (!pending && run && ph0 && decode.event);
+            if (next_run == run && next_pending == pending && next_stall == stall && next_event == event_latch)
+                break;
+            run = next_run;
+            pending = next_pending;
+            stall = next_stall;
+            event_latch = next_event;
+        }
+        // Falling ADIN_ACTIVE loads the U2 Apple data-in latch. Falling
+        // CATCH_ACTIVE requests a U17 copy controller transfer, even with RUN
+        // low. A held copy reuses the latch byte only until ADIN_ACTIVE falls
+        // again (original BE8C LDF, blocks A7/A2; both output pins invert).
+        // The bank was retained in the address phase. M2B0 is undriven in
+        // the data phase (TN68 Fig. 1) and must read low there for block A2
+        // to copy. The drawing has no pull-down; what holds it low on a
+        // production card is not known (Second Sight reference, 04-capture-logic).
+        const bool data_in = ph0 && ((decode.copy && run) || (!t.read && event_latch));
+        const bool copy = ph0 && decode.copy;
+        if (data_in_active && !data_in) host_input = t.data;
+        Edge edge{catch_active && !copy, !old_event && event_latch, old_pending != pending};
+        if (edge.event) event_address = t.address;
+        window_bands = copy ? band_bit(t.address) : 0;
+        bands |= window_bands;
+        data_in_active = data_in;
+        catch_active = copy;
+        return edge;
+    }
 
     // Clear volatile latches at power-on while retaining the selected equations.
     void power_on() { *this = SSCapture(lattice_map); }
@@ -77,11 +142,12 @@ public:
 
     // Decode t's address, read/write direction and bank pins. Return actions
     // for SSCard without consuming the pending event. This also updates the
-    // chip's remembered soft switches and dirty-band bits. BE8C preserves
+    // chip's remembered soft switches; phase() or complete() sets the band
+    // bits. BE8C preserves
     // its bank-selection behavior and does not capture border-color writes.
     ss_capture_result_t transfer(const ss_mega_transfer_t &t) {
-        // Retain the bank signal while /M2SEL is low. The 7M clock is the
-        // Apple 7 MHz clock; its edges close the model's bank sampling window.
+        // Retain the address-phase bank signal while /M2SEL is low. The
+        // transfer record supplies the value sampled before the data phase.
         // M2B0 later stops driving, so sampling it in the data phase would
         // lose auxiliary-bank writes (Apple IIgs Technical Note 68, Fig. 1).
         bank_held = mode_d3 && t.m2b0 && (bank_held || !t.m2sel_n);
@@ -137,11 +203,10 @@ public:
             result.bank = (bank_held && mode_d3 && !ramwrt) || (!bank_held && page2 && store80) ||
                           (!bank_held && ramwrt && !store80) || (!bank_held && mode_d3 && ramwrt && !hires);
         }
-        if (result.copy)
-            mark_band(a);
         return result;
     }
 
+    // Whole-transfer helper for decode fixtures that do not clock phase().
     // Accept t after any RDY hold, using the decode result from transfer().
     // Load the U2 Apple data-in latch only for copied writes or event writes.
     // Event reads retain its byte. Set pending once; held bus phases must
@@ -150,14 +215,15 @@ public:
         if (result.copy || (result.event && !t.read))
             host_input = t.data;
         if (result.copy)
-            mark_band(t.address);
+            bands |= band_bit(t.address);
         if (result.event) {
             event_address = t.address;
             pending = true;
         }
     }
 
-    // Release the pending host event when the Z180 selects its acknowledge port.
+    // Whole-transfer fixture acknowledgement. The running card uses phase()
+    // so acknowledgement also settles RUN, STALL and the retained event.
     void acknowledge() { pending = false; }
     // Read status at port $A4-$A7 (only its low three bits are used).
     // A nibble is four bits. $A4/$A5 return and clear low/high dirty-band
@@ -169,11 +235,11 @@ public:
         switch (port & 7) {
         case 4:
             nibble = bands & 15;
-            bands &= 0xf0;
+            bands &= 0xf0 | window_bands;
             break;
         case 5:
             nibble = bands >> 4;
-            bands &= 0x0f;
+            bands &= 0x0f | window_bands;
             break;
         case 6:
             nibble = event_address & 15;
@@ -186,10 +252,9 @@ public:
     }
 
 private:
-    // Set the 4 KiB dirty-band bit for copied writes from $2000 through $9FFF;
+    // The 4 KiB dirty-band bit of a copied write from $2000 through $9FFF;
     // SHR palette and scan-line bytes are tracked with their containing band.
-    void mark_band(uint16_t address) {
-        if (address >= 0x2000 && address < 0xa000)
-            bands |= 1 << ((address - 0x2000) >> 12);
+    static uint8_t band_bit(uint16_t address) {
+        return address >= 0x2000 && address < 0xa000 ? uint8_t(1 << ((address - 0x2000) >> 12)) : 0;
     }
 };

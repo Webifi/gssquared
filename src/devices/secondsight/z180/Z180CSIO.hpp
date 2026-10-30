@@ -58,7 +58,7 @@ public:
     // trdr_w loads data and clears completion; it does not start the transfer (p. 151).
     void cntr_w(uint8_t data), trdr_w(uint8_t data);
     // Return true when both completion and its interrupt enable are set (UM0050 p. 151).
-    bool check_interrupt() const { return (cntr & 0xc0) == 0xc0; }
+    [[gnu::always_inline]] bool check_interrupt() const { return (cntr & 0xc0) == 0xc0; }
 
 private:
     friend class Z180;

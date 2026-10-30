@@ -10,14 +10,14 @@
  *   consecutive pixel bytes. The Brooktree Bt481 palette/converter supplies
  *   RGB (red, green, blue) colors. Scanout means these display-memory reads.
  *
- *   SecondSightDisplay calls the renderer on the main thread after SSCard has
- *   synchronized. OTI087 owns memory, registers and cached rows; callers own the
- *   destination surface. The output is opaque ARGB8888: eight bits each for
+ *   SecondSightDisplay calls the renderer on the main thread while SSCard
+ *   has stopped card execution. OTI087 owns memory, registers and cached rows.
+ *   Callers own the destination surface. The output is opaque ARGB8888: eight bits each for
  *   alpha, red, green and blue. Rendering never advances the processor clock.
  *   A display-address latch retains the address until its scheduled load;
  *   recorded changes split the image into rows using the appropriate address.
  *
- *   Sources: Oak OTI-087 February 1993 databook pp. 39-46 and OTI-087X addendum;
+ *   Sources: Oak OTI-087 February 1993 databook pp. 21, 39-46 and OTI-087X addendum;
  *   IBM VGA/XGA Technical Reference May 1992 pp. 2-72 to 2-95 (address generation
  *   and palettes); Brooktree Bt481A L481A_C pp. 7-8 (direct-color bit positions).
  *   SIMD means one host instruction handles several pixels; scalar fallbacks
@@ -40,30 +40,41 @@ constexpr unsigned bit(uint32_t value, unsigned n) {
     return (value >> n) & 1;
 }
 // Two cursor bits choose color 0, color 1, leave the screen alone, or invert
-// its RGB bits. This is the model's interpretation of the Oak cursor planes.
+// its palette index. See the Second Sight reference, docs/06-video.md, "Hardware
+// cursor": Oak STD8_HC.DRV copies the Windows AND/XOR masks into these planes.
 enum class CursorOp { color0, color1, transparent, invert };
 constexpr CursorOp cursor_codes[] = {CursorOp::color0, CursorOp::color1, CursorOp::transparent, CursorOp::invert};
 
-// VRAM retains four 64K planes per 256K block. Unpack a scanline in wide
-// groups, splitting at each block boundary so the hardware wrap is retained.
-// dest receives count bytes starting at display-byte address in memory.
-// Leading/trailing bytes use scalar reads; whole groups interleave the planes.
-void packed_bytes(uint8_t *dest, uint8_t const *memory, uint32_t address, unsigned count) {
+// VRAM retains four 64K planes per 256K block. Each pan alignment selects
+// four constant plane offsets, including the next column after lane three.
+// Thus a one-pixel pan uses the same vector loop as an aligned scanline.
+// Split at plane-storage boundaries; callers bound the populated memory.
+template<unsigned Lane>
+void packed_bytes_lanes(uint8_t *dest, uint8_t const *memory, uint32_t address, unsigned count) {
     auto byte = [&](uint32_t a) { return memory[(a & 0xc0000) | ((a & 3) << 16) | ((a >> 2) & 0xffff)]; };
-    while (count && (address & 3)) {
-        *dest++ = byte(address++);
-        --count;
-    }
+    constexpr unsigned a0 = (Lane & 3) * 0x10000;
+    constexpr unsigned a1 = ((Lane + 1) & 3) * 0x10000 + ((Lane + 1) >> 2);
+    constexpr unsigned a2 = ((Lane + 2) & 3) * 0x10000 + ((Lane + 2) >> 2);
+    constexpr unsigned a3 = ((Lane + 3) & 3) * 0x10000 + ((Lane + 3) >> 2);
     // Limit each group to the current 256 KiB block before forming plane
     // pointers; the next iteration recalculates them across the wrap.
     while (count >= 4) {
         unsigned groups = std::min(count / 4, (0x40000 - (address & 0x3ffff)) / 4);
+        if constexpr (Lane != 0) {
+            if (!groups) {
+                // Finish this storage block, then continue at aligned lane 0.
+                unsigned const tail = 0x40000 - (address & 0x3ffff);
+                for (unsigned i = 0; i < tail; ++i) *dest++ = byte(address++);
+                packed_bytes_lanes<0>(dest, memory, address, count - tail);
+                return;
+            }
+        }
         uint8_t const *p = memory + (address & 0xc0000) + ((address >> 2) & 0xffff);
         unsigned n = groups;
 #if defined(__wasm_simd128__)
         while (n >= 16) {
-            auto a = wasm_v128_load(p), b = wasm_v128_load(p + 0x10000);
-            auto c = wasm_v128_load(p + 0x20000), d = wasm_v128_load(p + 0x30000);
+            auto a = wasm_v128_load(p + a0), b = wasm_v128_load(p + a1);
+            auto c = wasm_v128_load(p + a2), d = wasm_v128_load(p + a3);
             auto ab0 = wasm_i8x16_shuffle(a,b,0,16,1,17,2,18,3,19,4,20,5,21,6,22,7,23);
             auto ab1 = wasm_i8x16_shuffle(a,b,8,24,9,25,10,26,11,27,12,28,13,29,14,30,15,31);
             auto cd0 = wasm_i8x16_shuffle(c,d,0,16,1,17,2,18,3,19,4,20,5,21,6,22,7,23);
@@ -76,7 +87,7 @@ void packed_bytes(uint8_t *dest, uint8_t const *memory, uint32_t address, unsign
         }
 #elif defined(__ARM_NEON)
         while (n >= 16) {
-            uint8x16x4_t lanes = {{vld1q_u8(p), vld1q_u8(p + 0x10000), vld1q_u8(p + 0x20000), vld1q_u8(p + 0x30000)}};
+            uint8x16x4_t lanes = {{vld1q_u8(p + a0), vld1q_u8(p + a1), vld1q_u8(p + a2), vld1q_u8(p + a3)}};
             vst4q_u8(dest, lanes);
             p += 16;
             dest += 64;
@@ -84,10 +95,10 @@ void packed_bytes(uint8_t *dest, uint8_t const *memory, uint32_t address, unsign
         }
 #endif
         while (n--) {
-            dest[0] = p[0];
-            dest[1] = p[0x10000];
-            dest[2] = p[0x20000];
-            dest[3] = p[0x30000];
+            dest[0] = p[a0];
+            dest[1] = p[a1];
+            dest[2] = p[a2];
+            dest[3] = p[a3];
             ++p;
             dest += 4;
         }
@@ -96,6 +107,24 @@ void packed_bytes(uint8_t *dest, uint8_t const *memory, uint32_t address, unsign
     }
     while (count--)
         *dest++ = byte(address++);
+}
+
+void packed_bytes(uint8_t *dest, uint8_t const *memory, uint32_t address, unsigned count) {
+    switch (address & 3) {
+        case 0: packed_bytes_lanes<0>(dest, memory, address, count); break;
+        case 1: packed_bytes_lanes<1>(dest, memory, address, count); break;
+        case 2: packed_bytes_lanes<2>(dest, memory, address, count); break;
+        case 3: packed_bytes_lanes<3>(dest, memory, address, count); break;
+    }
+}
+
+// RASHn selects an unpopulated megabyte on this card. Use fixed $FF bytes
+// there, including a row that crosses the boundary; never mirror RASLn.
+// Second Sight reference, docs/15-oak-drawing.md, "Hardware scrolling" (RASHn).
+void packed_bytes_bounded(uint8_t *dest, uint8_t const *memory, uint32_t address, unsigned count) {
+    unsigned const valid = address < OTI087::VRAM_SIZE ? std::min(count, OTI087::VRAM_SIZE - address) : 0;
+    packed_bytes(dest, memory, address, valid);
+    std::fill(dest + valid, dest + count, 0xff);
 }
 
 // Expand packed pixels with exactly the Bt481 channel bit placement; vector
@@ -195,28 +224,204 @@ void packed_colors(uint32_t *dest, uint8_t const *source, unsigned count, Bt481 
 }
 } // namespace
 
+// Freeze display controls and the test-input byte for later raster replay.
+// Memory and beam timing remain owned by the live controller.
+OTI087::display_registers_t OTI087::display_registers() const {
+    display_registers_t state{sequencer, crtc, gc, attribute, {}, ramdac, setup, enable,
+                              uint8_t(scan_test() && system_data ? *system_data : 0xff)};
+    std::copy(std::begin(ext), std::end(ext), state.ext.begin());
+    return state;
+}
+
+// Select controls for a saved span; render_changes restores the live copy.
+// Rebuild derived colors because the saved palette may differ from the last span.
+void OTI087::display_registers(const display_registers_t &state) {
+    sequencer = state.sequencer;
+    crtc = state.crtc;
+    gc = state.gc;
+    attribute = state.attribute;
+    std::copy(state.ext.begin(), state.ext.end(), std::begin(ext));
+    ramdac = state.dac;
+    setup = state.setup;
+    enable = state.enable;
+    test_data = state.test_data;
+    rendering_snapshot = true;
+    packed_scanout = packed() && !scan_test();
+    render_colors_valid = false;
+}
+
+// Preserve the color/control state up to this pixel, not just this line.
+// No memory write logging or scanline timer is needed. Palette staging
+// writes do not reach here until the complete RGB triplet is committed.
+void OTI087::record_display_change() {
+    int const position = vpos() * timing.total_width + hpos();
+    // At frame origin there are no earlier pixels to preserve. Several writes
+    // at one position need only the first pre-write state; the next saved
+    // state, or the final live state, includes all those writes.
+    if (position <= 0 || (!display_changes.empty() && position <= display_changes.back().position))
+        return;
+    display_changes.push_back({position, display_registers()});
+}
+
+// IBM p2-75, Figure 2-65. Address-bit selection is common to text and all VGA shift
+// modes. Oak packed pixels use their own eight-byte start-address units.
+uint32_t OTI087::display_address(uint32_t counter, unsigned row_scan) const {
+    uint32_t address = counter;
+    if (crtc.dw)
+        address = (counter & ~0xffffU) | ((counter << 2) & 0xfffc) | ((counter >> 12) & 3);
+    else if (!crtc.word_mode)
+        address = (counter & ~0xffffU) | ((counter << 1) & 0xfffe) | bit(counter, crtc.aw ? 15 : 13);
+    if (!crtc.map13)
+        address = (address & ~0x2000U) | (bit(row_scan, 0) << 13);
+    if (!crtc.map14)
+        address = (address & ~0x4000U) | (bit(row_scan, 1) << 14);
+    return address & sequencer.address_mask;
+}
+
+unsigned OTI087::serializer_load_shift() const {
+    // IBM Type 1 convention (pp2-11, 2-49/50): load every 1/2/4 character
+    // clocks, SH4 taking priority. Oak's planar/word-address register model
+    // fits this better than XGA Type 2's Extended Graphics exception.
+    // No Oak source identifies its type or suppressed-load output. Model a
+    // group of consecutive bytes per map, consumed before the next reload.
+    // Oak packed scanout is separate.
+    return bit(sequencer.data[1], 4) ? 2 : bit(sequencer.data[1], 2) ? 1 : 0;
+}
+
+// Select one byte from the group loaded at this character-clock position.
+// count_shift divides the address count; load_shift sets the group size.
+uint32_t OTI087::serializer_address(const scan_row_t &row, unsigned character,
+                                  unsigned count_shift, unsigned load_shift) const {
+    unsigned const lane_mask = (1U << load_shift) - 1;
+    uint32_t const counter = row.address + crtc.byte_panning + ((character & ~lane_mask) >> count_shift);
+    // Select CRTC address bits when loading a group, then select its byte.
+    // Apply the Extended Memory (EM) plane-size mask after both steps.
+    // With EM clear, the model clears bits 14/15 in each of four planes
+    // to provide 64 KiB total; higher Oak segment bits are retained.
+    return (display_address(counter, row.scan) + (character & lane_mask)) & sequencer.address_mask;
+}
+
+// Convert palette indices once for all rows using the current register span.
+void OTI087::prepare_render_colors() {
+    if (render_colors_valid)
+        return;
+    for (unsigned i = 0; i < render_dac_colors.size(); ++i)
+        render_dac_colors[i] = ramdac.pixel_select(i);
+    for (unsigned i = 0; i < render_attribute_colors.size(); ++i)
+        render_attribute_colors[i] = attribute_color(i);
+    render_colors_valid = true;
+}
+
+// IBM p2-95 lists different pan units for 9-dot text and 256-color pixels.
+unsigned OTI087::horizontal_pan(bool split) const {
+    if (split && bit(attribute.data[0x10], 5))
+        return 0;
+    // Packed modes use IBM's eight-dot rule: zero means no shift, then
+    // one pixel per step. Second Sight reference, docs/15-oak-drawing.md,
+    // "Horizontal pixel panning"; Oak's BIOS sets pan zero in packed modes.
+    if (packed())
+        return attribute.pel_shift & 7;
+    if (!gc.alpha_dis && !bit(sequencer.data[1], 0))
+        return attribute.pel_shift == 8 ? 0 : (attribute.pel_shift & 7) + 1;
+    if (gc.shift256 && bit(attribute.data[0x10], 6))
+        return (attribute.pel_shift & 6) >> 1;
+    return attribute.pel_shift & 7;
+}
+
+// Constant-register frames can calculate a row directly. During raster
+// changes the caller supplies the accumulated start-of-line latch instead.
+OTI087::scan_row_t OTI087::scan_row(unsigned y) const {
+    if (render_row)
+        return *render_row;
+    unsigned const fields = get_interlace_mode() ? 2 : 1;
+    unsigned const line = y / fields;
+    unsigned const split_line = (crtc.line_compare + 1) * vertical_divisor();
+    bool const split = line >= split_line;
+    unsigned const scan_repeat = crtc.scan_doubling + 1;
+    unsigned const scan = (split ? line - split_line : line) / scan_repeat +
+                          (split ? 0 : crtc.preset_row_scan);
+    unsigned const rows = scan / crtc.maximum_scan_line;
+    // Line compare clears the address counter in either field. The odd
+    // field's initial offset belongs only to the region before that reset.
+    return {(split ? 0 : crtc.start_addr) + (rows * fields + (split ? 0 : y % fields)) * crtc.offset * 2,
+            scan % crtc.maximum_scan_line, (split ? line - split_line : line) % scan_repeat, split};
+}
+
+// IBM pp2-71/103: add the *current* offset only when the row rolls over.
+// A mid-frame write therefore changes following rows without moving old ones.
+void OTI087::next_scan_row(scan_row_t &row, unsigned field_line) const {
+    if ((field_line + 1) % vertical_divisor() == 0 && field_line / vertical_divisor() == crtc.line_compare) {
+        row = {0, 0, 0, true};
+        return;
+    }
+    if (++row.repeat <= crtc.scan_doubling)
+        return;
+    row.repeat = 0;
+    if (++row.scan < crtc.maximum_scan_line)
+        return;
+    row.scan = 0;
+    row.address += crtc.offset * (get_interlace_mode() ? 4 : 2);
+}
+
+// Replay only register boundaries, while retaining the address accumulator
+// across them. A palette split and a pitch split on the same row coexist.
+void OTI087::render_changes(ss_video_buffer_t surface) {
+    auto live = display_registers();
+    unsigned change = 0;
+    display_registers(display_changes.front().registers);
+    unsigned const fields = get_interlace_mode() ? 2 : 1;
+    unsigned const total = timing.total_height / fields;
+    scan_row_t row = scan_row(0);
+    for (unsigned beam_y = 0; beam_y < unsigned(timing.total_height); ++beam_y) {
+        unsigned const field_line = beam_y % total;
+        unsigned const y = field_line * fields + beam_y / total;
+        int x = 0;
+        // The preceding row has already advanced its address. A write at
+        // column zero changes this row's controls, not that earlier increment.
+        while (change < display_changes.size() &&
+               display_changes[change].position <= int(beam_y) * timing.total_width) {
+            ++change;
+            display_registers(change < display_changes.size() ? display_changes[change].registers : live);
+        }
+        if (!field_line)
+            row = {crtc.start_addr + (beam_y / total) * crtc.offset * 2, crtc.preset_row_scan, 0, false};
+        render_row = &row;
+        while (x < timing.total_width) {
+            int end = timing.total_width;
+            if (change < display_changes.size())
+                end = std::min(end, display_changes[change].position - int(beam_y) * timing.total_width);
+            if (end > x && y < unsigned(surface.height) && x < surface.width)
+                render(surface, {x, std::min(end, surface.width) - 1, int(y), int(y)});
+            x = std::max(x, end);
+            if (x == timing.total_width)
+                break;
+            if (change < display_changes.size() &&
+                display_changes[change].position <= int(beam_y) * timing.total_width + x) {
+                ++change;
+                display_registers(change < display_changes.size() ? display_changes[change].registers : live);
+            }
+        }
+        next_scan_row(row, field_line);
+    }
+    render_row = nullptr;
+    display_registers(live);
+    rendering_snapshot = false;
+}
+
 // Scan packed pixels using Oak start/offset units and the active Bt481 depth.
 void OTI087::draw_packed(ss_video_buffer_t &surface, ss_video_rect_t const &clip) {
     unsigned const bytes = ramdac.bytes_per_pixel();
-    unsigned const repeat = crtc.maximum_scan_line * (crtc.scan_doubling + 1);
-    unsigned const interlace = get_interlace_mode() ? 2 : 1;
-    // The packed-mode pitch uses two eight-byte fetches per offset unit.
-    // Bypassing the VGA word/dword mux is inferred from Oak BIOS settings;
-    // Second Sight ROM1.4 mode13 also sets VGA dword/PEL-width bits.
-    uint32_t const pitch = crtc.offset * 16;
-    uint32_t const start = crtc.start_addr * 8;
-    std::array<uint32_t, 256> palette{};
-    if (bytes == 1)
-        for (unsigned i = 0; i < palette.size(); ++i)
-            palette[i] = ramdac.pixel_select(i);
+    // Start = CRTC start * 8; pitch = CRTC offset * 16, bypassing the VGA
+    // word/dword mux. Sources: https://github.com/Webifi/second-sight-reference,
+    // docs/06-video.md, "Packed-pixel mode and the CRTC" (Oak BIOS settings),
+    // and docs/15-oak-drawing.md, "Display features that cost no drawing"
+    // (XFree86 OAKAdjust). These packed units are inferred from that software.
     packed_row.resize(clip.width() * bytes);
     for (int y = clip.top; y <= clip.bottom; ++y) {
-        unsigned const field_line = y / interlace;
-        bool const split = field_line > crtc.line_compare;
-        unsigned const row = (split ? field_line - crtc.line_compare - 1 : field_line + crtc.preset_row_scan) / repeat;
-        uint32_t const address = (split ? 0 : start) + (row * interlace + (y % interlace)) * pitch;
-        packed_bytes(packed_row.data(), memory.data(), address + clip.left * bytes, packed_row.size());
-        packed_colors(&surface.pixel(y, clip.left), packed_row.data(), clip.width(), ramdac, palette.data());
+        auto const row = scan_row(y);
+        uint32_t const address = row.address * 8 + horizontal_pan(row.split) * bytes;
+        packed_bytes_bounded(packed_row.data(), memory.data(), address + clip.left * bytes, packed_row.size());
+        packed_colors(&surface.pixel(y, clip.left), packed_row.data(), clip.width(), ramdac, render_dac_colors.data());
     }
 }
 
@@ -232,96 +437,178 @@ VideoColor OTI087::attribute_color(uint8_t index) const {
 
 // Fetch character, attribute and font-plane bytes at CRTC addresses; apply
 // blink and cursor rules before converting the palette index to color.
+template<bool Test>
 void OTI087::draw_text(ss_video_buffer_t &surface, ss_video_rect_t const &clip) {
     // Standard VGA character/attribute planes 0/1 and font plane2. Use the
     // same physical VRAM translation as CPU accesses, including odd/even mode.
-    unsigned const dots = bit(sequencer.data[1], 0) ? 8 : 9;
-    unsigned const scan_repeat = crtc.scan_doubling + 1;
-    unsigned const cell_height = crtc.maximum_scan_line * scan_repeat;
-    unsigned const pitch = offset() / 2;
-    unsigned const pan = dots == 9 ? (attribute.pel_shift + 1) % 9 : attribute.pel_shift & 7;
+    unsigned const dots = char_dots();
+    unsigned const count_shift = crtc.div4 ? 2 : crtc.div2 ? 1 : 0;
+    unsigned const load_shift = serializer_load_shift();
+    bool const fonts = bit(sequencer.data[4], 1);
+    bool const font_select = fonts && sequencer.char_sel.A != sequencer.char_sel.B;
     bool const blink = bit(attribute.data[0x10], 3);
     bool const blink_off = bit(frames, 5);
     for (int y = clip.top; y <= clip.bottom; ++y) {
-        bool const split = y > crtc.line_compare;
-        unsigned const scan = split ? y - crtc.line_compare - 1 : y + crtc.preset_row_scan;
-        unsigned const glyph_row = (scan % cell_height) / scan_repeat;
-        uint32_t const start = (split ? 0 : crtc.start_addr) + (scan / cell_height) * pitch;
+        auto const row = scan_row(y);
+        unsigned const glyph_row = row.scan;
+        unsigned const pan = horizontal_pan(row.split);
         for (int x = clip.left; x <= clip.right;) {
-            unsigned dx = x + ((split && bit(attribute.data[0x10], 5)) ? 0 : pan);
-            uint32_t cell = start + dx / dots;
-            uint8_t ch = linear_byte(cell * 4), attr = linear_byte(cell * 4 + 1);
-            unsigned bank = bit(attr, 3) ? sequencer.char_sel.A : sequencer.char_sel.B;
+            unsigned dx = x + pan;
+            unsigned const character = dx / dots;
+            uint32_t counter = row.address + crtc.byte_panning + (character >> count_shift);
+            uint32_t cell = serializer_address(row, character, count_shift, load_shift);
+            uint8_t ch = linear_byte(cell * 4), attr = Test ? test_data : linear_byte(cell * 4 + 1);
+            unsigned bank = fonts ? (bit(attr, 3) ? sequencer.char_sel.A : sequencer.char_sel.B) : 0;
             uint32_t font = bank * 0x2000 + ch * 32 + (glyph_row & 31);
-            uint8_t glyph = linear_byte(font * 4 + 2);
-            bool cursor = crtc.cursor_enable && bit(frames, 4) && cell == crtc.cursor_addr &&
+            uint8_t glyph = Test ? 0xff : linear_byte(font * 4 + 2);
+            // IBM pp2-72/99: underline is a glyph-row attribute, so it
+            // follows font selection, blink and the line-graphics ninth dot.
+            // SUL is the desired (one-based) line minus one; glyph_row is
+            // already zero-based, just like the cursor row comparators.
+            if ((attr & 0x77) == 1 && glyph_row == crtc.underline_loc)
+                glyph = 0xff;
+            bool cursor = crtc.cursor_enable && bit(frames, 4) && counter == crtc.cursor_addr + crtc.cursor_skew &&
                           glyph_row >= crtc.cursor_scan_start && glyph_row <= crtc.cursor_scan_end;
             uint32_t row_pixels[9];
             vga_raster_text_glyph_row(row_pixels, dots, glyph, ch, bit(attribute.data[0x10], 2),
-                                      blink && blink_off && bit(attr, 7), cursor, attribute_color(attr & 15),
-                                      attribute_color((attr >> 4) & (blink ? 7 : 15)));
+                                      blink && blink_off && bit(attr, 7), cursor, render_attribute_colors[attr & (font_select ? 7 : 15)],
+                                      render_attribute_colors[(attr >> 4) & (blink ? 7 : 15)]);
             for (unsigned column = dx % dots; column < dots && x <= clip.right; column++, x++)
                 surface.pixel(y, x) = row_pixels[column];
         }
     }
 }
 
+// OTI-087 p33, attribute-controller scan test. The card leaves SD15:8 open;
+// use $FF there and the last Z180 bus byte on SD7:0 by convention (Second
+// Sight reference, docs/reference/oti087-registers.md, ext $03). Like VRAM,
+// the retained byte is sampled for rendering, with register changes keeping
+// the sampled value for the preceding span. No writes or latches are changed.
+void OTI087::draw_scan_test(ss_video_buffer_t &surface, ss_video_rect_t const &clip) {
+    if (!rendering_snapshot)
+        test_data = system_data ? *system_data : 0xff;
+    if (!packed() && !gc.alpha_dis) {
+        draw_text<true>(surface, clip);
+        return;
+    }
+    uint32_t color;
+    if (packed()) {
+        const uint8_t pixels[4] = {0xff, 0xff, 0xff, 0xff};
+        packed_colors(&color, pixels, 1, ramdac, render_dac_colors.data());
+    } else if (gc.shift256 && bit(attribute.data[0x10], 6))
+        color = render_dac_colors[(attribute.data[0x12] & 15) * 17];
+    else
+        color = render_attribute_colors[15];
+    surface.fill(color, clip);
+}
+
 // Combine one bit from each VGA plane into the attribute-controller index.
+// A nine-dot character clock still loads eight bits per map, so the ninth dot
+// samples index zero (model choice: IBM p2-93 defines the ninth dot for text only).
+template<bool Nine>
 void OTI087::draw_planar(ss_video_buffer_t &surface, ss_video_rect_t const &clip) {
-    unsigned const repeat = crtc.maximum_scan_line * (crtc.scan_doubling + 1);
-    unsigned const interlace = get_interlace_mode() ? 2 : 1;
+    constexpr unsigned dots = Nine ? 9 : 8;
+    unsigned const count_shift = crtc.div4 ? 2 : crtc.div2 ? 1 : 0;
+    unsigned const load_shift = serializer_load_shift();
+    auto colors = render_attribute_colors;
+    // Monochrome attribute logic changes the palette index, not VRAM.
+    // Resolve it once per span rather than branching for every pixel.
+    if (bit(attribute.data[0x10], 1))
+        for (unsigned i = 0; i < colors.size(); ++i) {
+            unsigned color = i & attribute.data[0x12] & 5;
+            if (color == 4 && bit(attribute.data[0x10], 3) && bit(frames, 5))
+                color = 0;
+            colors[i] = render_attribute_colors[color];
+        }
     for (int y = clip.top; y <= clip.bottom; ++y) {
-        unsigned const field_line = y / interlace;
-        bool const split = field_line > crtc.line_compare;
-        unsigned const row = (split ? field_line - crtc.line_compare - 1 : field_line + crtc.preset_row_scan) / repeat;
-        uint32_t const start = (split ? 0 : crtc.start_addr) + (row * interlace + y % interlace) * offset();
-        unsigned const pan = (split && bit(attribute.data[0x10], 5)) ? 0 : attribute.pel_shift & 7;
-        for (int x = clip.left; x <= clip.right; ++x) {
+        auto const row = scan_row(y);
+        unsigned const pan = horizontal_pan(row.split);
+        for (int x = clip.left; x <= clip.right;) {
             unsigned const dx = x + pan;
-            uint32_t const address = (start + dx / 8) * 4;
-            uint8_t color = 0;
+            uint32_t const address = serializer_address(row, dx / dots, count_shift, load_shift) * 4;
+            uint8_t planes[4];
             for (unsigned p = 0; p != 4; ++p)
-                color |= bit(linear_byte(address + p), 7 - (dx & 7)) << p;
-            surface.pixel(y, x) = attribute_color(color);
+                planes[p] = linear_byte(address + p);
+            unsigned column = dx % dots;
+            for (; column < 8 && x <= clip.right; ++column, ++x) {
+                unsigned const shift = 7 - column;
+                unsigned const color = bit(planes[0], shift) | (bit(planes[1], shift) << 1) |
+                                       (bit(planes[2], shift) << 2) | (bit(planes[3], shift) << 3);
+                surface.pixel(y, x) = colors[color];
+            }
+            if (Nine && column == 8 && x <= clip.right)
+                surface.pixel(y, x++) = colors[0];
         }
     }
 }
 
 // Interpret VGA 256-color shift mode using CRTC address generation; this
 // layout differs from Oak packed-pixel scanout.
+template<bool Nine>
 void OTI087::draw_vga256(ss_video_buffer_t &surface, ss_video_rect_t const &clip) {
     // Four consecutive PELs come from the four maps at one CRTC address.
     // Use the same plane storage as CPU accesses, independently of CH4.
     // The output geometry already accounts for attribute PW (pixel width),
     // so only the remaining shift-mode repetition is applied here.
-    unsigned const scan_repeat = crtc.scan_doubling + 1;
-    unsigned const repeat = crtc.maximum_scan_line * scan_repeat;
-    unsigned const interlace = get_interlace_mode() ? 2 : 1;
-    unsigned const pixel_repeat = bit(attribute.data[0x10], 6) ? 1 : 2;
-    unsigned const count_divisor = crtc.div4 ? 4 : crtc.div2 ? 2 : 1;
+    bool const eight_bit = bit(attribute.data[0x10], 6);
+    unsigned const count_shift = crtc.div4 ? 2 : crtc.div2 ? 1 : 0;
+    unsigned const load_shift = serializer_load_shift();
+    unsigned const pixel_shift = eight_bit ? 0 : 1;
+    unsigned const group_width = eight_bit ? 4 : 8;
+    unsigned const plane_mask = (attribute.data[0x12] & 15) * 17;
     for (int y = clip.top; y <= clip.bottom; ++y) {
-        unsigned const field_line = y / interlace;
-        bool const split = field_line > crtc.line_compare;
-        unsigned const scan = split ? field_line - crtc.line_compare - 1 : field_line + crtc.preset_row_scan;
-        unsigned const row_scan = (scan % repeat) / scan_repeat;
-        uint32_t const start =
-            (split ? 0 : crtc.start_addr) + ((scan / repeat) * interlace + y % interlace) * crtc.offset * 2;
-        unsigned const pan = (split && bit(attribute.data[0x10], 5)) ? 0 : (attribute.pel_shift & 6) >> 1;
-        for (int x = clip.left; x <= clip.right; ++x) {
-            unsigned const dx = x / pixel_repeat + pan;
-            uint32_t const counter = start + crtc.byte_panning + dx / (4 * count_divisor);
-            uint32_t address = counter;
-            // IBM TRM Figure2-65, p2-75. DW takes precedence over WB.
-            // Retain the full MA12/MA13 recirculation, including 16K boundaries.
-            if (crtc.dw)
-                address = (counter & ~uint32_t(0xffff)) | ((counter << 2) & 0xfffc) | ((counter >> 12) & 3);
-            else if (!crtc.word_mode)
-                address = (counter & ~uint32_t(0xffff)) | ((counter << 1) & 0xfffe) | bit(counter, crtc.aw ? 15 : 13);
-            if (!crtc.map13)
-                address = (address & ~uint32_t(0x2000)) | (bit(row_scan, 0) << 13);
-            if (!crtc.map14)
-                address = (address & ~uint32_t(0x4000)) | (bit(row_scan, 1) << 14);
-            surface.pixel(y, x) = ramdac.pixel_select(linear_byte((address << 2) | (dx & 3)));
+        auto const row = scan_row(y);
+        unsigned const pan = horizontal_pan(row.split);
+        if (Nine && eight_bit) {
+            // PW pairs consecutive dots, so some pairs include the zero ninth dot.
+            unsigned const dot = (clip.left + pan) * 2;
+            unsigned character = dot / 9, column = dot % 9;
+            uint8_t samples[9] = {};
+            auto load = [&] {
+                uint32_t const address = serializer_address(row, character, count_shift, load_shift) * 4;
+                for (unsigned p = 0; p < 4; ++p) {
+                    uint8_t const pixel = linear_byte(address + p);
+                    samples[p * 2] = pixel >> 4;
+                    samples[p * 2 + 1] = pixel & 15;
+                }
+            };
+            auto next = [&] {
+                unsigned const sample = samples[column];
+                if (++column == 9) {
+                    column = 0;
+                    ++character;
+                    load();
+                }
+                return sample;
+            };
+            load();
+            for (int x = clip.left; x <= clip.right; ++x) {
+                unsigned const high = next();
+                surface.pixel(y, x) = render_dac_colors[((high << 4) | next()) & plane_mask];
+            }
+            continue;
+        }
+        for (int x = clip.left; x <= clip.right;) {
+            unsigned const dot = x + pan;
+            unsigned const character = Nine ? dot / 9 : dot >> (2 + pixel_shift);
+            uint32_t const address = serializer_address(row, character, count_shift, load_shift) * 4;
+            uint8_t pixels[4];
+            for (unsigned p = 0; p < 4; ++p)
+                pixels[p] = linear_byte(address + p) & plane_mask;
+            // Four attribute inputs are sampled twice in 256-color mode
+            // (IBM p2-22). Plane enables gate those inputs on both samples.
+            // PW=0 uses low-then-high nibbles as a model convention; IBM's
+            // supported mode13 programming sets PW=1 (p2-92).
+            unsigned column = Nine ? dot % 9 : dot & (group_width - 1);
+            if (eight_bit)
+                for (; column < 4 && x <= clip.right; ++column, ++x)
+                    surface.pixel(y, x) = render_dac_colors[pixels[column]];
+            else {
+                for (; column < 8 && x <= clip.right; ++column, ++x)
+                    surface.pixel(y, x) = render_attribute_colors[(pixels[column >> 1] >> ((column & 1) * 4)) & 15];
+                if (Nine && column == 8 && x <= clip.right)
+                    surface.pixel(y, x++) = render_attribute_colors[0];
+            }
         }
     }
 }
@@ -332,52 +619,109 @@ void OTI087::draw_cursor(ss_video_buffer_t &surface, ss_video_rect_t const &clip
     uint8_t const control = ext[0x4c];
     if (!bit(control, 0) || ramdac.asleep())
         return;
+    // Second Sight reference, docs/06-video.md, "Hardware cursor": WHATVGA
+    // tested the cursor in 256-color modes only. Its colors pass through the
+    // Bt481 palette and pixel mask, including unchained VGA 256-color modes.
+    if (ramdac.bytes_per_pixel() != 1 ||
+        !(packed() || (gc.alpha_dis && gc.shift256 && bit(attribute.data[0x10], 6))))
+        return;
     if (bit(control, 3) && bit(frames, 2 + ((control >> 4) & 3)))
         return;
     unsigned const px = ext[0x44], py = ext[0x45];
     if (px > 63 || py > 63)
         return; // p45: presets end at 63, never wrap
-    unsigned const x0 = (ext[0x40] << 8) | ext[0x41];
-    unsigned const y0 = (ext[0x42] << 8) | ext[0x43];
+    unsigned const skew = crtc.disp_enable_skew * char_dots() * horizontal_multiplier() / pixel_divisor();
+    // Oak p44 measures cursor position from the start of the display area.
+    // Oak STD8_HC.DRV, SHA-256
+    // 523f60c849db7f865fce075e80a890aa1f5dbc3fb243d5b0c7e950525f6d5fa9,
+    // file offsets $56AD-$56C6 and $5537-$557A: signed corner coordinates;
+    // Y is the row before the cursor, at every preset, including negative Y.
+    // WHATVGA rounds X to a multiple of four and reports imperfect positions;
+    // Oak's driver also avoids -14. Convention: draw every signed X exactly
+    // where the registers say; no source defines the faulty pixel positions.
+    // Source analysis: https://github.com/Webifi/second-sight-reference,
+    // docs/06-video.md, "Hardware cursor", "How Oak's driver positions it".
+    int const x0 = int(int16_t((ext[0x40] << 8) | ext[0x41])) + int(skew);
+    int const yreg = int16_t((ext[0x42] << 8) | ext[0x43]);
+    // Probably the comparator uses field lines: each pattern row appears
+    // in both fields. Same reference section, "Probably: twice as tall in
+    // interlace". This scales position and height, independently of presets.
+    unsigned const field_shift = get_interlace_mode() ? 1 : 0;
+    unsigned const fields = 1U << field_shift;
+    int const y0 = (yreg + 1) * int(fields);
     // The cursor base uses eight-byte units. Each 64-pixel row occupies
     // eight bytes in each of two planes (Oak databook pp. 44-46).
     uint32_t const address = ((ext[0x47] << 16) | (ext[0x48] << 8) | ext[0x49]) << 3;
-    ss_video_rect_t area{int(x0), int(x0 + 63 - px), int(y0), int(y0 + 63 - py)};
+    ss_video_rect_t area{x0, x0 + 63 - int(px), y0, y0 + (64 - int(py)) * int(fields) - 1};
     area = area.intersect(clip);
     area = area.intersect(surface.bounds());
     // p46 bit1 permits the cursor over overscan, but never sync/blanking.
     if (!bit(control, 1))
-        area = area.intersect(timing.visible());
-    for (int y = area.top; y <= area.bottom; ++y)
+        area = area.intersect({int(skew), int(skew) + timing.width - 1, 0, timing.height - 1});
+    uint32_t const color0 = render_dac_colors[ext[0x4a]];
+    uint32_t const color1 = render_dac_colors[ext[0x4b]];
+    scan_row_t row;
+    unsigned pan = 0;
+    int inverted_row = -1;
+    for (int y = area.top; y <= area.bottom; ++y) {
         for (int x = area.left; x <= area.right; ++x) {
             if (blanked(x, y))
                 continue;
-            unsigned const sx = x - x0 + px, sy = y - y0 + py;
-            // Oak SetCursor uses the first eight bytes of each row for plane A
-            // and the next eight for B. Its per-byte nibble swap reorders pixels,
-            // never planes. Bit 2 selects the bit order within each byte
+            unsigned const sx = x - x0 + px, sy = (unsigned(y - y0) >> field_shift) + py;
+            // STD8_HC.DRV offsets $53D2-$541B and $87A9-$87E7 use the first
+            // eight bytes of each row for plane A and the next eight for B
+            // (Second Sight reference, "Hardware cursor"). Its per-byte nibble
+            // swap reorders pixels, never planes. Probably bit2 changes only
+            // the order within each byte (same reference section), as described
             // (Oak databook p. 46). The code table states this model's
             // interpretation of the two plane bits.
             uint8_t const a = linear_byte(address + sy * 16 + sx / 8);
             uint8_t const b = linear_byte(address + sy * 16 + 8 + sx / 8);
             unsigned const lane = bit(control, 2) ? 7 - (sx & 7) : (sx & 7);
             switch (cursor_codes[(bit(a, lane) << 1) | bit(b, lane)]) {
-                // Model assumption: color registers select DAC entries in all modes;
-                // inversion complements displayed RGB. No true-color cursor bus
-                // description is available to establish a different interpretation.
                 case CursorOp::color0:
-                    surface.pixel(y, x) = ramdac.pixel_select(ext[0x4a]);
+                    surface.pixel(y, x) = color0;
                     break;
                 case CursorOp::color1:
-                    surface.pixel(y, x) = ramdac.pixel_select(ext[0x4b]);
+                    surface.pixel(y, x) = color1;
                     break;
                 case CursorOp::transparent:
                     break;
-                case CursorOp::invert:
-                    surface.pixel(y, x) ^= 0x00ffffff;
+                case CursorOp::invert: {
+                    // Oak p21: P[7:0] carries the index to the external palette
+                    // chip. The cursor's invert operation (Second Sight
+                    // reference, "Hardware cursor") therefore complements
+                    // that index before the Bt481 mask and palette lookup.
+                    // Recover it from scanout, not RGB: palette entries can
+                    // have equal colors and need not form complementary pairs.
+                    unsigned index = attribute.data[0x11];
+                    if (x >= int(skew) && x < int(skew) + timing.width && y < timing.height) {
+                        // Solid and transparent cursors need no background
+                        // fetch. Resolve a row only at its first inverted pixel.
+                        if (inverted_row != y) {
+                            row = scan_row(y);
+                            pan = horizontal_pan(row.split);
+                            inverted_row = y;
+                        }
+                        unsigned const dot = x - skew + pan;
+                        if (scan_test())
+                            index = packed() ? 255 : (attribute.data[0x12] & 15) * 17;
+                        else if (packed())
+                            index = linear_byte(row.address * 8 + dot);
+                        else {
+                            unsigned const count_shift = crtc.div4 ? 2 : crtc.div2 ? 1 : 0;
+                            unsigned const load_shift = serializer_load_shift();
+                            unsigned const plane_mask = (attribute.data[0x12] & 15) * 17;
+                            index = linear_byte(serializer_address(row, dot >> 2, count_shift, load_shift) * 4 +
+                                                (dot & 3)) & plane_mask;
+                        }
+                    }
+                    surface.pixel(y, x) = render_dac_colors[index ^ 255];
                     break;
+                }
             }
         }
+    }
 }
 
 // Clip the requested surface and dispatch the active VGA mode; blanking and
@@ -386,31 +730,58 @@ void OTI087::render(ss_video_buffer_t surface, ss_video_rect_t clip) {
     auto bounds = clip.intersect(surface.bounds());
     if (bounds.empty())
         return;
-    if (!enabled() || !crtc.sync_en || (sequencer.data[1] & 0x20) || !(attribute.index & 0x20)) {
+    if (!enabled() || (sequencer.data[0] & 3) != 3 || (sequencer.data[1] & 0x20) || !(attribute.index & 0x20)) {
         surface.fill(0xff000000, bounds);
         return;
     }
-    auto active = bounds.intersect(timing.visible());
+    if (!render_row)
+        render_colors_valid = false;
+    prepare_render_colors();
+    unsigned const dots = char_dots();
+    int const skew = crtc.disp_enable_skew * dots * horizontal_multiplier() / pixel_divisor();
+    auto active = bounds.intersect({skew, timing.width + skew - 1, 0, timing.height - 1});
     bool const overscan = active.width() != bounds.width() || active.height() != bounds.height();
     if (overscan)
         surface.fill(0xff000000, bounds);
     if (!active.empty()) {
-        if (packed())
-            draw_packed(surface, active);
+        ss_video_buffer_t target{surface.pixels + skew, surface.width - skew, surface.height, surface.pitch};
+        ss_video_rect_t area{active.left - skew, active.right - skew, active.top, active.bottom};
+        if (scan_test())
+            draw_scan_test(target, area);
+        else if (packed())
+            draw_packed(target, area);
         else if (!gc.alpha_dis)
-            draw_text(surface, active);
+            draw_text<false>(target, area);
         else if (gc.shift256)
-            draw_vga256(surface, active);
+            dots == 9 ? draw_vga256<true>(target, area) : draw_vga256<false>(target, area);
         else if (!gc.shift_reg)
-            draw_planar(surface, active);
+            dots == 9 ? draw_planar<true>(target, area) : draw_planar<false>(target, area);
         else
-            draw_cga(surface, active);
+            dots == 9 ? draw_cga<true>(target, area) : draw_cga<false>(target, area);
     }
     if (overscan)
         for (int y = bounds.top; y <= bounds.bottom; y++)
             for (int x = bounds.left; x <= bounds.right; x++)
                 if (!active.contains(x, y) && !blanked(x, y))
                     surface.pixel(y, x) = ramdac.pixel_select(attribute.data[0x11]);
+    // Blanking can begin inside the displayed rectangle. Fill intervals,
+    // not individual pixels, so the common raster has no per-pixel test.
+    int const hb_start = crtc.horz_blank_start * dots * horizontal_multiplier() / pixel_divisor();
+    unsigned const hb = (crtc.horz_blank_end - crtc.horz_blank_start) & 63;
+    int const hb_end = hb_start + (hb ? hb : 64) * dots * horizontal_multiplier() / pixel_divisor();
+    for (int y = bounds.top; y <= bounds.bottom; ++y) {
+        // Probe vertical blank separately from horizontal blank at x=0.
+        unsigned const line = y / ((get_interlace_mode() ? 2 : 1) * vertical_divisor());
+        unsigned const vt = crtc.vert_total + 2;
+        unsigned const vb = (crtc.vert_blank_end - crtc.vert_blank_start + 1) & 255;
+        if ((line + vt - (crtc.vert_blank_start + 1) % vt) % vt < (vb ? vb : 256))
+            surface.fill(0xff000000, {bounds.left, bounds.right, y, y});
+        else {
+            surface.fill(0xff000000, ss_video_rect_t{hb_start, hb_end - 1, y, y}.intersect(bounds));
+            if (hb_end > timing.total_width)
+                surface.fill(0xff000000, ss_video_rect_t{0, hb_end - timing.total_width - 1, y, y}.intersect(bounds));
+        }
+    }
     draw_cursor(surface, bounds);
 }
 
@@ -418,9 +789,19 @@ void OTI087::render(ss_video_buffer_t surface, ss_video_rect_t clip) {
 // Start-address latch changes split the frame into independently addressed spans.
 bool OTI087::render_packed_frame(ss_video_buffer_t surface) {
     unsigned const bytes = ramdac.bytes_per_pixel();
-    if (!packed() || bytes == 4 || !enabled() || !crtc.sync_en || (sequencer.data[1] & 0x20) ||
-        !(attribute.index & 0x20) || (ext[0x4c] & 1) || surface.width != timing.width ||
+    bool const active_changes = !display_changes.empty() &&
+        (get_interlace_mode() || display_changes.front().position < timing.height * timing.total_width);
+    if (active_changes || !packed_scanout || bytes == 4 || !enabled() || (sequencer.data[0] & 3) != 3 || (sequencer.data[1] & 0x20) ||
+        !(attribute.index & 0x20) || crtc.disp_enable_skew || (ext[0x4c] & 1) || surface.width != timing.width ||
         surface.height != timing.height || surface.width <= 0 || surface.height <= 0)
+        return false;
+    // The row-reuse path assumes the active rectangle is outside blanking.
+    // Nonstandard blank windows use the same interval renderer as other modes.
+    unsigned const hblank = (crtc.horz_blank_end - crtc.horz_blank_start) & 63;
+    unsigned const vblank = (crtc.vert_blank_end - crtc.vert_blank_start + 1) & 255;
+    if (crtc.horz_blank_start <= crtc.horz_disp_end || crtc.vert_blank_start < crtc.vert_disp_end ||
+        crtc.horz_blank_start + (hblank ? hblank : 64) > crtc.horz_total + 5 ||
+        crtc.vert_blank_start + 1 + (vblank ? vblank : 256) > crtc.vert_total + 2)
         return false;
     // Row reuse needs ordered start-address changes beginning at line zero.
     // Reject ambiguous spans so the general renderer handles them instead.
@@ -437,7 +818,8 @@ bool OTI087::render_packed_frame(ss_video_buffer_t surface) {
             palette[i] = ramdac.pixel_select(i);
     // Equal VRAM bytes are not enough: geometry, packing, sleep and palette
     // can change their visible colors. Any such change invalidates every row.
-    bool const redraw = !packed_valid || packed_width != surface.width || packed_height != surface.height ||
+    bool const width_changed = packed_width != surface.width;
+    bool const redraw = !packed_valid || width_changed || packed_height != surface.height ||
                         packed_command != ramdac.command_r() || packed_asleep != ramdac.asleep() ||
                         packed_palette != palette;
     packed_width = surface.width;
@@ -449,18 +831,44 @@ bool OTI087::render_packed_frame(ss_video_buffer_t surface) {
     packed_row.resize(row_bytes);
     packed_source.resize(row_bytes * surface.height);
     frame_pixels.resize(surface.width * surface.height);
-    unsigned const repeat = crtc.maximum_scan_line * (crtc.scan_doubling + 1);
-    unsigned const interlace = get_interlace_mode() ? 2 : 1;
-    unsigned change = 0;
+    std::array<uint32_t, 10> const address_state = {
+        unsigned(surface.height), starts.empty() ? crtc.start_addr : starts.front().address,
+        crtc.offset, crtc.maximum_scan_line, crtc.scan_doubling, crtc.preset_row_scan,
+        crtc.line_compare, unsigned(get_interlace_mode()), vertical_divisor(),
+        (starts.empty() ? attribute.pel_shift : starts.front().pan) | (unsigned(attribute.data[0x10] & 0x20) << 8) | (bytes << 16)};
+    bool const address_changes = starts.size() > 1 && starts[1].line < surface.height;
+    // Width changes the populated-memory bound even when row addresses do not.
+    if (!packed_addresses_valid || width_changed || address_changes || packed_address_state != address_state) {
+        packed_addresses.resize(surface.height);
+        packed_rows_in_memory = true;
+        unsigned const fields = get_interlace_mode() ? 2 : 1;
+        for (unsigned field = 0; field < fields; ++field) {
+            unsigned change = 0, field_line = 0;
+            auto row = scan_row(field);
+            for (unsigned y = field; y < unsigned(surface.height); y += fields) {
+                while (change + 1 < starts.size() && starts[change + 1].line <= y)
+                    ++change;
+                uint32_t address = row.address;
+                if (!row.split && !starts.empty())
+                    address += starts[change].address - crtc.start_addr;
+                uint8_t const pan = starts.empty() ? attribute.pel_shift : starts[change].pan;
+                unsigned const shift = row.split && bit(attribute.data[0x10], 5) ? 0 : pan & 7;
+                packed_addresses[y] = address * 8 + shift * bytes;
+                if (packed_addresses[y] >= VRAM_SIZE || row_bytes > VRAM_SIZE - packed_addresses[y])
+                    packed_rows_in_memory = false;
+                next_scan_row(row, field_line++);
+            }
+        }
+        packed_address_state = address_state;
+        // A frame containing address changes cannot seed the constant cache.
+        packed_addresses_valid = !address_changes;
+    }
+    // Bound checks belong to address preparation, not the common pixel copy.
+    // The general path supplies fixed undriven bytes for an unpopulated row.
+    if (!packed_rows_in_memory)
+        return false;
     for (int y = 0; y < surface.height; ++y) {
-        while (change + 1 < starts.size() && starts[change + 1].line <= y)
-            ++change;
-        uint32_t const start = (starts.empty() ? crtc.start_addr : starts[change].address) * 8;
-        unsigned const field_line = y / interlace;
-        bool const split = field_line > crtc.line_compare;
-        unsigned const row = (split ? field_line - crtc.line_compare - 1 : field_line + crtc.preset_row_scan) / repeat;
-        uint32_t const address = (split ? 0 : start) + (row * interlace + y % interlace) * crtc.offset * 16;
-        packed_bytes(packed_row.data(), memory.data(), address, row_bytes);
+        packed_bytes(packed_row.data(), memory.data(), packed_addresses[y], row_bytes);
         uint8_t *previous = packed_source.data() + y * row_bytes;
         uint32_t *pixels = frame_pixels.data() + y * surface.width;
     // Compare the displayed source bytes, after current address translation,
@@ -485,11 +893,32 @@ bool OTI087::render_packed_frame(ss_video_buffer_t surface) {
 // boundaries. Restore the live register values after rendering those spans;
 // presenting a frame must not change what the emulated CPU reads.
 void OTI087::render_frame(ss_video_buffer_t surface) {
+    // The usual page flip latches after the active picture. Keep the packed
+    // SIMD/row-reuse path for that complete picture under its previous state;
+    // only changes during active scanout need the row accumulator replay.
+    if (!display_changes.empty() && !get_interlace_mode() && surface.width == timing.width &&
+        surface.height == timing.height && display_changes.front().position >= timing.height * timing.total_width) {
+        auto live = display_registers();
+        display_registers(display_changes.front().registers);
+        if (!render_packed_frame(surface)) {
+            packed_valid = false;
+            present_top = 0;
+            present_bottom = surface.height - 1;
+            render(surface, surface.bounds());
+        }
+        display_registers(live);
+        rendering_snapshot = false;
+        return;
+    }
     if (render_packed_frame(surface))
         return;
     packed_valid = false;
     present_top = 0;
     present_bottom = surface.height - 1;
+    if (!display_changes.empty()) {
+        render_changes(surface);
+        return;
+    }
     uint32_t address = crtc.start_addr;
     uint8_t pan = attribute.pel_shift;
     if (starts.empty())
@@ -530,22 +959,31 @@ ss_video_frame_t OTI087::display_state() const {
 }
 
 // Interpret CGA-compatible shift/address modes through the VGA palette path.
+template<bool Nine>
 void OTI087::draw_cga(ss_video_buffer_t &surface, const ss_video_rect_t &clip) {
-    // Generic VGA shift-register path retained from pc_vga, including its
-    // dense plane-zero addressing and odd/even 8K scanline banks.
-    unsigned height = crtc.scan_doubling + 1;
-    unsigned width = (crtc.horz_disp_end + 1) * 8;
+    constexpr unsigned dots = Nine ? 9 : 8;
+    // IBM p2-84: even/odd bits from maps 0/1 become C0/C1; maps 2/3
+    // supply C2/C3. All four maps share the regular CRTC address mux.
+    unsigned const count_shift = crtc.div4 ? 2 : crtc.div2 ? 1 : 0;
+    unsigned const load_shift = serializer_load_shift();
     for (int y = clip.top; y <= clip.bottom; y++) {
-        unsigned row = y / height;
-        uint32_t address = (row & 1) * 0x2000 + (row >> 1) * width / 4;
-        for (int x = clip.left; x <= clip.right; x++) {
-            uint8_t color = (memory[(address + x / 4) & 0xfffff] >> (6 - (x & 3) * 2)) & 3;
-            // The generic VGA CGA fallback selects its pens directly; unlike
-            // Oak's planar path it does not apply the color-plane enable mask.
-            uint8_t palette = attribute.data[color];
-            palette = (attribute.data[0x10] & 0x80) ? (palette & 15) | ((attribute.data[0x14] & 15) << 4)
-                                                    : (palette & 63) | ((attribute.data[0x14] & 12) << 4);
-            surface.pixel(y, x) = ramdac.pixel_select(palette);
+        auto const row = scan_row(y);
+        unsigned const pan = horizontal_pan(row.split);
+        for (int x = clip.left; x <= clip.right;) {
+            unsigned const dx = x + pan;
+            uint32_t const address = serializer_address(row, dx / dots, count_shift, load_shift) * 4;
+            uint8_t planes[4];
+            for (unsigned p = 0; p < 4; ++p)
+                planes[p] = linear_byte(address + p);
+            unsigned column = dx % dots;
+            for (; column < 8 && x <= clip.right; ++column, ++x) {
+                unsigned const plane = column >> 2;
+                unsigned const shift = 6 - (column & 3) * 2;
+                unsigned const color = ((planes[plane] >> shift) & 3) | (((planes[plane + 2] >> shift) & 3) << 2);
+                surface.pixel(y, x) = render_attribute_colors[color];
+            }
+            if (Nine && column == 8 && x <= clip.right)
+                surface.pixel(y, x++) = render_attribute_colors[0];
         }
     }
 }

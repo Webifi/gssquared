@@ -11,8 +11,7 @@
 // Return true only when the card supplies read data. The delay is counted
 // in ticks of the host's 14.31818 MHz clock, about 70 ns each.
 // Source: Apple IIgs Technical Note 68, Mega II Select and Ready sections.
-bool MMU_IIgs::observe_megaii(uint32_t address, uint8_t &value, bool read) {
-    if (!megaii_observer) return false;
+bool MMU_IIgs::observe_megaii_access(uint32_t address, uint8_t &value, bool read) {
     // The FPI (Fast Processor Interface) serves these accesses without the
     // slow bus. /M2SEL is the active-low signal that tells a slot card the
     // slow-bus address is valid. Reporting these accesses to Second Sight
@@ -23,7 +22,11 @@ bool MMU_IIgs::observe_megaii(uint32_t address, uint8_t &value, bool read) {
     if (a == 0xc035 || a == 0xc036 || a == 0xc037) return false;
     if (read && (a == 0xc02d || a == 0xc068 || (a >= 0xc071 && a <= 0xc07f))) return false;
     megaii_transfer_t transfer;
-    transfer.ticks = clock ? clock->get_c14m() : 0;
+    // The bus record names the first physical data-phase fall, rather than
+    // the instruction's request time. The following CPU increment retires
+    // this same cycle; it must not charge another period after an RDY hold.
+    transfer.ticks = clock ? ((NClockIIgs *)clock)->begin_slot_cycle() : 0;
+    if (held_write_active) held_write_fall = transfer.ticks;
     transfer.address = address;
     transfer.data = value;
     transfer.read = read;
@@ -34,25 +37,44 @@ bool MMU_IIgs::observe_megaii(uint32_t address, uint8_t &value, bool read) {
     uint64_t held_ticks = megaii_observer(transfer);
     // A card RDY hold postpones completion of this Apple access, so advance
     // the host clock as well as the card before returning its data.
-    if (clock && held_ticks) clock->adjust_c14m(held_ticks);
+    if (clock && held_ticks) advance_megaii_hold(transfer.ticks + held_ticks);
     value = transfer.data;
     return transfer.driven;
 }
 
-// Second Sight can answer $C0B0-$C0BF reads with its output latch, which
-// holds the last byte written by the card processor. Ask it
-// first; if it does not drive data, retain normal Mega II memory/I/O decode.
-uint8_t MMU_IIgs::megaii_bus_read(uint32_t address) {
-    uint8_t value = megaii->floating_bus_read();
-    if (observe_megaii(address, value, true)) return value;
-    return megaii->read(address & 0xffff);
+// Second Sight reports resolved RDY time in absolute 14.31818 MHz ticks.
+// Repeat the retained write at each Apple bus fall while the CPU waits.
+void MMU_IIgs::advance_megaii_hold(uint64_t ticks) {
+    if (!clock) return;
+    auto *gs_clock = (NClockIIgs *)clock;
+    // The retained request is physically presented on every occupied PH0
+    // period. RAM and selected write strobes remain live while the 65816
+    // waits; subsequent CPU writes cannot occur (TN68 pp.3-4; FPI pp.22-24).
+    while (held_write_active && held_write_fall && held_write_fall <= ticks) {
+        gs_clock->advance_slot_hold(held_write_fall);
+        if (held_write_destination) *held_write_destination = held_write_data;
+        else megaii->write(held_write_address, held_write_data);
+        held_write_strobed = true;
+        held_write_fall += NClockIIgs::slot_period(held_write_fall % 912 == 896);
+    }
+    gs_clock->advance_slot_hold(ticks);
 }
 
-// Second Sight must capture the write and finish any RDY hold before the
-// Mega II memory or soft switch changes. value is the Apple write byte.
-void MMU_IIgs::megaii_bus_write(uint32_t address, uint8_t value) {
-    observe_megaii(address, value, false);
-    megaii->write(address & 0xffff, value);
+// Keep the original write byte and physical RAM destination across a card
+// wait. Null destination selects ordinary Mega II decoding. A write already
+// strobed during the hold must not be repeated again on function return.
+void MMU_IIgs::write_megaii_observed_access(uint32_t address, uint8_t value, uint8_t *destination) {
+    held_write_active = true;
+    held_write_strobed = false;
+    held_write_fall = 0;
+    held_write_destination = destination;
+    held_write_address = address;
+    held_write_data = value;
+    observe_megaii_access(address, value, false);
+    held_write_active = false;
+    if (held_write_strobed) return;
+    if (destination) *destination = value;
+    else megaii->write(address & 0xffff, value);
 }
 
 uint8_t float_area_read(void *context, uint32_t address) {
@@ -125,11 +147,13 @@ inline void bank_e1_write(void *context, uint32_t address, uint8_t value) {
     {
         // This auxiliary-RAM path bypasses Mega II decode, but Second Sight
         // still sees the physical bus access and may hold RDY before it ends.
-        mmu_iigs->observe_megaii(address, value, false);
         uint16_t a16 = (uint16_t)address;
-        if (a16 >= 0xD000 && !mmu_iigs->is_lc_write_enable()) return; // LC write protected
+        if (a16 >= 0xD000 && !mmu_iigs->is_lc_write_enable()) {
+            mmu_iigs->observe_megaii(address, value, false);
+            return; // LC write protected
+        }
         uint8_t *ram = mmu_iigs->megaii->get_memory_base();
-        ram[mmu_iigs->e1_aux_index(a16)] = value;
+        mmu_iigs->write_megaii_observed(address, value, ram + mmu_iigs->e1_aux_index(a16));
     }
 }
 

@@ -12,7 +12,8 @@
  *   the model returns RGB (red, green, blue) colors rather than voltages.
  *
  *   SSCard owns OTI087. Its execution thread changes registers and advances
- *   time. The main thread renders or inspects it only after synchronization.
+ *   time. The main thread reads it while card execution is stopped, either
+ *   after synchronization or after claiming a completed scan for presentation.
  *   A latch retains a value for later use; register writes can prepare a new
  *   screen address before the display latches it. An event is a scheduled
  *   change such as the start of vertical blanking. Time is in emulated seconds;
@@ -79,13 +80,20 @@ struct ss_video_timing_t {
     int width = 640, height = 480, total_width = 800, total_height = 525;
     uint32_t pixel_clock = 25175000;
     unsigned pixel_divisor = 1;
+    // CRTC (cathode-ray tube controller) character counts before conversion to
+    // integer texture pixels. Their ratio is active line time / total line time:
+    // character dots, clock selection and dividers cancel. Keep the counts so
+    // three-byte RAMDAC pixels do not round the monitor's horizontal geometry.
+    unsigned display_characters = 80, line_characters = 100;
+    // Retain diagnostic clock inputs with the accepted raster, not partially
+    // programmed registers. Vertical counts above always include both fields.
+    uint32_t oscillator_clock = 25175000;
+    bool interlaced = false, sequencer_half_clock = false, board_half_clock = false;
     // Preserve the reference model's integral clock-period rounding before
     // multiplying by the raster totals (one unit is 10^-18 seconds).
     uint64_t frame_units() const {
         uint64_t ticks = uint64_t(total_width) * total_height * pixel_divisor;
-        // Clamp implausibly long programmed frames to one second. This is
-        // a model bound, not an Oak clock-divider feature.
-        return ticks >= pixel_clock ? 1000000000000000000ULL : (1000000000000000000ULL / pixel_clock) * ticks;
+        return (1000000000000000000ULL / pixel_clock) * ticks;
     }
     // Duration of one complete raster in seconds, including blanking.
     double frame_period() const { return double(frame_units()) * 1e-18; }
@@ -139,6 +147,7 @@ public:
     double time_until_pos(int y, int x = 0) const;
     // Borrow geometry/timing; synchronize card execution before host inspection.
     const ss_video_timing_t &display_timing() const { return timing; }
+    unsigned odd_field_sync_phase() const;
     // Copy active mode, addressing units and resolved palette for inspection.
     ss_video_frame_t display_state() const;
 
@@ -191,22 +200,35 @@ public:
     static constexpr uint32_t mclk_hz() { return 40000000; }
     // Read Oak AT-bus zero-wait enable, extended $13 bit 3 (databook p. 39).
     bool at_zero_wait_enabled() const { return ext[0x13] & 8; }
-    // Set the modelled minimum read delay in seconds, clamped to two 18 MHz periods.
-    void set_access_wait(double seconds) { access_delay = std::max(seconds, 2.0 / 18000000); }
-    // Delay in seconds; writes require at least three 18 MHz periods in this model.
-    double access_wait(bool write = false) const { return std::max(access_delay, double(write ? 3 : 2) / 18000000); }
+    // Read the write cache enable, extended $22 bit 3 (databook p. 42).
+    bool write_cache_enabled() const { return ext[0x22] & 8; }
+    // An optional longer access delay also holds IOCHRDY for that duration.
+    void set_access_wait(double seconds) { access_delay = std::max(seconds, 0.0); }
+    // The Oak's command-width floor in seconds: two read and three write waits
+    // at 18 MHz (OTI-087 p47). SSCard::extra_wait charges the board's longer count.
+    double access_wait(bool write = false) const {
+        return std::max(access_delay, double(write ? 3 : 2) / 18000000);
+    }
     // IOCHRDY (I/O channel ready) is high once the modelled access delay expires.
     bool iochrdy_r() const { return now >= ready_until; }
     // Whether the enabled vertical interrupt latch requests service.
     bool cint_r() const { return crtc.irq_latch && !crtc.irq_disable; }
     // Electrical vertical-sync output after Oak polarity/test controls.
     int vsync_r();
+    // Horizontal sync, including CRTC skew and Miscellaneous Output polarity.
+    int hsync_r() const;
+    // Borrow the board's retained SD7:0 byte; the owner outlives this chip.
+    // Scan-test convention: Second Sight reference,
+    // docs/reference/oti087-registers.md, ext $03.
+    void bind_system_data(const uint8_t &data) { system_data = &data; }
     // Electrical output is CINTn; true here means asserted (low at the pin).
     std::function<void(bool)> cint_callback;
     std::function<void(bool)> ready_callback;
     std::function<void(bool, bool, bool)> eeprom_callback; // DI, CS, SK observation
     // Borrow the palette/converter owned by this chip; caller must synchronize.
     Bt481 &dac() { return ramdac; }
+    // Passive inspection borrows chip state only after the card is synchronized.
+    const Bt481 &dac() const { return ramdac; }
     // Resolve the eight-bit overscan (border) palette index through the Bt481.
     VideoColor border_color() const { return ramdac.pixel_select(attribute.data[0x11]); }
     // Borrow persistent configuration memory for main-thread load/save.
@@ -219,17 +241,27 @@ public:
     // Draw all rows with the display-address changes recorded for this frame.
     void render_frame(ss_video_buffer_t surface);
     // Copy changed rows to caller-owned SDL texture; true means upload succeeded.
-    bool upload_frame(SDL_Texture *texture, bool full = false);
+    // An optional host CRT filter receives completed pixels, never chip state.
+    // odd_texture retains the other field when the output look separates fields.
+    bool upload_frame(SDL_Texture *texture, bool full = false,
+        class SecondSightCrt *crt = nullptr, SDL_Texture *odd_texture = nullptr,
+        const std::function<void(const uint32_t *, int, int)> &before_upload = {});
+    // Borrow the last raw raster on the synchronized render thread. A test
+    // observer may inspect it around presentation; filters never own this data.
+    const std::vector<uint32_t> &presentation_pixels() const { return frame_pixels; }
+    // Read-only interlace flag for host field presentation (Oak $14 bit 7).
+    bool display_interlaced() const { return get_interlace_mode(); }
 
 private:
     uint8_t miscellaneous_output;
     uint8_t feature_control;
 
     // Sequencer registers: plane-write enables, font banks and pixel-clock division.
-    struct {
+    struct sequencer_t {
         uint8_t index;
         uint8_t data[0x100];
         uint8_t map_mask;
+        uint32_t address_mask;
         // Font-bank selectors used by text attribute bit 3.
         struct {
             uint8_t A, B;
@@ -237,7 +269,7 @@ private:
     } sequencer;
 
     // CRTC counters and display-address latches, including split-screen and IRQ state.
-    struct {
+    struct crtc_t {
         uint8_t index;
         uint8_t data[0x100];
         uint16_t horz_total;
@@ -287,7 +319,7 @@ private:
     } crtc;
 
     // Graphics controller: read latches and CPU write/compare/mask settings.
-    struct {
+    struct graphics_t {
         uint8_t index;
         uint8_t latch[4];
         uint8_t set_reset;
@@ -306,10 +338,11 @@ private:
         uint8_t memory_map_sel;
         uint8_t host_oe;
         uint8_t chain_oe;
+        bool plain_write;
     } gc;
 
     // Attribute controller: 16-color lookup, blink, pixel panning and index/data phase.
-    struct {
+    struct attribute_t {
         uint8_t index, data[0x15];
         int state;
         uint8_t prot_bit;
@@ -318,15 +351,23 @@ private:
     } attribute;
 
     std::vector<uint8_t> memory;
+    // Aperture decode depends on register writes, not on each CPU byte.
+    uint32_t memory_base = 0, memory_size = 0, bank_window = 0;
+    uint32_t memory_bank[2] = {};
     uint8_t ext[0x80] = {}, latch[8] = {};
     uint8_t index = 0, setup = 0, enable = 0;
+    const uint8_t *system_data = nullptr;
+    uint8_t test_data = 0xff;
+    bool packed_scanout = false;
+    bool rendering_snapshot = false;
     bool output_divider = false, linear_address = false, side_effects = true;
     int monitor_override = -1;
     Bt481 ramdac;
     SerialEEPROM93C46 eeprom;
     ss_video_timing_t timing;
     double now = 0, blank_origin = 0, next_frame = 0, next_blank = 0, next_line_zero = 0, next_latch = 0;
-    double ready_until = 0, access_delay = 2.0 / 18000000;
+    double next_interrupt = 0, next_raster = 0;
+    double ready_until = 0, access_delay = 0;
     uint64_t frames = 0;
     // Display-address/pan value from a latch edge at this raster line. Owned
     // by OTI087; execution records it, synchronized rendering consumes it.
@@ -336,10 +377,92 @@ private:
         uint8_t pan;
     };
     std::vector<start_change_t> starts;
+    // Display controls saved before a visible register write. OTI087 owns the
+    // copies; execution records them and the main thread replays them while
+    // the card is stopped. Video memory and clock deadlines are not copied.
+    struct display_registers_t {
+        sequencer_t sequencer;
+        crtc_t crtc;
+        graphics_t gc;
+        attribute_t attribute;
+        std::array<uint8_t, 128> ext;
+        Bt481 dac;
+        uint8_t setup, enable, test_data;
+    };
+    // End of a span drawn with the saved controls. Position counts output
+    // pixels in beam order, including blanking and both interlaced fields.
+    struct display_change_t {
+        int position;
+        display_registers_t registers;
+    };
+    std::vector<display_change_t> display_changes;
+    // Derived colors live across the rows of one register span. Raster replay
+    // invalidates them at a state boundary, not for each line or pixel.
+    std::array<uint32_t, 256> render_dac_colors{};
+    std::array<uint32_t, 16> render_attribute_colors{};
+    bool render_colors_valid = false;
+    // Address generator at the start of a displayed row. The renderer owns
+    // this temporary value. Address is in CRTC counter units, scan is the
+    // glyph/plane row, repeat counts duplicate scans, and split marks the
+    // region below line compare, where the address counter restarts at zero.
+    struct scan_row_t {
+        uint32_t address;
+        unsigned scan, repeat;
+        bool split;
+    };
+    // Borrowed only during render_changes; null lets each row derive its address.
+    const scan_row_t *render_row = nullptr;
+    // Copy display controls, including the DAC palette and sampled test byte.
+    display_registers_t display_registers() const;
+    // Install replay controls without changing time; invalidate derived colors.
+    void display_registers(const display_registers_t &state);
+    // Save the pre-write controls through the current beam position.
+    void record_display_change();
+    // Draw saved spans into the caller's surface, then restore live controls.
+    void render_changes(ss_video_buffer_t surface);
+    // Return address state for texture row y, weaving fields when interlaced.
+    scan_row_t scan_row(unsigned y) const;
+    // Advance past field_line within one field, applying row repeats and split.
+    void next_scan_row(scan_row_t &row, unsigned field_line) const;
+    // Map a CRTC counter and glyph row to a byte address within a VGA plane.
+    uint32_t display_address(uint32_t counter, unsigned row_scan) const;
+    // Fetch byte for character-clock position; shifts encode counter division
+    // and bytes loaded together as powers of two. See IBM pp. 2-49/50, 2-75.
+    uint32_t serializer_address(const scan_row_t &row, unsigned character, unsigned count_shift,
+                                unsigned load_shift) const;
+    // Return log2 of the modeled group loaded for serial pixel output.
+    unsigned serializer_load_shift() const;
+    // Cache DAC and attribute colors once per register span.
+    void prepare_render_colors();
+    // Return leftward pixel displacement; split permits the line-compare reset.
+    unsigned horizontal_pan(bool split) const;
+    // Scan-line division doubles counter durations; total includes two encoded
+    // trailing lines (IBM CRTC vertical-total and mode-control registers).
+    unsigned vertical_divisor() const { return crtc.sldiv ? 2 : 1; }
+    unsigned field_total() const { return (crtc.vert_total + 2) * vertical_divisor(); }
+    // Sequencer 1 bit 0 alone sets the character clock, also in graphics. IBM p2-50
+    // only tells software to use 8 dots there; Sequential's SECOND/MISC/XXX is XX
+    // with 9-dot clocks and a shorter total: 360 pixels at almost the same line rate.
+    unsigned char_dots() const { return (sequencer.data[1] & 1) ? 8 : 9; }
+    // Interlaced texture rows are woven, but the beam visits a complete
+    // even field followed by a complete odd field, including both blanks.
+    unsigned active_end_line() const {
+        return timing.interlaced ? (timing.total_height + timing.height) / 2 : timing.height;
+    }
+    void vertical_interrupt();
+    // Raster deadlines change only at a raster edge or a timing-register
+    // write. CPU accesses need only their cached minimum, plus READY/EEPROM.
+    void update_raster_deadline();
     std::vector<uint32_t> frame_pixels;
     // Derived display data only. Compare source bytes and DAC output before
     // reusing a row; register writes and debug captures need no dirty hooks.
     std::vector<uint8_t> packed_source, packed_row;
+    // Constant-register frames reuse row addresses. Keep every dependency so
+    // pitch, split, preset and interlace changes invalidate this derived data.
+    std::vector<uint32_t> packed_addresses;
+    std::array<uint32_t, 10> packed_address_state{};
+    bool packed_addresses_valid = false;
+    bool packed_rows_in_memory = true;
     std::array<uint32_t, 256> packed_palette{};
     int packed_width = 0, packed_height = 0;
     uint8_t packed_command = 0;
@@ -376,6 +499,9 @@ private:
     bool vertical_retrace();
     // Miscellaneous Output bit 0 chooses monochrome $3B0 or color $3D0 ports.
     uint16_t get_crtc_port() const { return miscellaneous_output & 1 ? 0x3d0 : 0x3b0; }
+    // Share the extended decoder; const Video removes I/O effects at compile
+    // time, while mutable Video retains the original port behavior and cost.
+    template<class Video> static uint8_t extended_read_impl(Video &video, unsigned offset);
     // Read the Oak register selected by index; status/EEPROM bits reflect live pins (Oak pp. 31-46).
     uint8_t extended_r();
     // Write data to the selected Oak register with its mask and side effects (Oak pp. 31-46).
@@ -384,19 +510,17 @@ private:
     uint8_t dac_r(uint8_t rs) { return ramdac.vga_r(rs, side_effects); }
     // Forward a VGA DAC write and invalidate cached colors used by scanout.
     void dac_w(uint8_t rs, uint8_t data) {
+        if (ramdac.display_write(rs))
+            record_display_change();
+        uint8_t command = ramdac.command_r();
         ramdac.vga_w(rs, data);
-        recompute_params();
+        if (command != ramdac.command_r())
+            recompute_params();
     }
-    // Return the selected CRTC register with unused/read-only bits handled as VGA defines.
-    uint8_t crtc_read() const;
     // Apply data to the selected CRTC counter/control field and retain register protection rules.
     void crtc_write(uint8_t data);
-    // Return the selected graphics-controller field; undefined indices return 0xff.
-    uint8_t gc_read() const;
     // Apply data to the selected graphics plane, latch, compare or mask field.
     void gc_write(uint8_t data);
-    // Return the attribute-controller register selected by its index, or 0xff outside its map.
-    uint8_t attribute_read() const;
     // Use the index/data toggle to interpret data; status reads reset that toggle (IBM VGA attribute registers).
     void attribute_write(uint8_t data);
     // Store data in the selected sequencer register and decode plane/font selections.
@@ -408,11 +532,9 @@ private:
     uint8_t vga_latch_write(int plane, uint8_t data);
     // Rotate CPU write data by graphics-controller count, wrapping the byte.
     uint8_t rotate_right(uint8_t value) const { return (value >> gc.rotate_count) | (value << (8 - gc.rotate_count)); }
-    // Combine data and the retained plane latch by replace/AND/OR/XOR;
-    // mask selects changed bits and unmasked bits retain the latch value.
-    uint8_t vga_logical_op(uint8_t data, uint8_t plane, uint8_t mask) const;
     // Oak $21 bits 3:2 = 01 selects packed pixels (databook p. 42).
     bool packed() const { return (ext[0x21] & 12) == 4; }
+    bool scan_test() const { return (ext[3] & 0x87) == 0x85; }
     // Combine the board half-select with the Z180 VGA aperture address.
     uint32_t card_address(uint32_t address, bool half) const {
         return (address & 0x7ffff) | (half ? 0x80000 : 0) | (linear_address ? 0x100000 : 0);
@@ -420,6 +542,7 @@ private:
     // Test whether address selects the configured aperture. On true, write
     // the translated offset; write selects read versus write bank (Oak pp. 42-46).
     bool decode_memory(uint32_t address, bool write, uint32_t &offset) const;
+    void update_memory_mapping();
     // Convert a linear display address to the four-plane backing-store layout.
     uint32_t storage_address(uint32_t address) const;
     // Return a raw linear display byte after storage-address translation; no CPU latch effects.
@@ -435,23 +558,77 @@ private:
     void planar_w(uint32_t address, uint8_t data);
     // Apply the Oak packed-pixel write/expansion mode at address using byte data (Oak pp. 42-46).
     void packed_w(uint32_t address, uint8_t data);
+    // IBM VGA write equations applied to the selected saved latch byte; Oak wide-latch use is inferred (docs/15-oak-drawing.md).
+    uint8_t vga_write_byte(unsigned plane, uint8_t data, uint8_t saved) const {
+        auto bit = [](unsigned value, unsigned n) { return (value >> n) & 1; };
+        if (gc.plain_write)
+            return data;
+        uint8_t mask = gc.bit_mask;
+        switch (gc.write_mode) {
+            case 0:
+                data = bit(gc.enable_set_reset, plane) ? (bit(gc.set_reset, plane) ? 0xff : 0) : rotate_right(data);
+                break;
+            case 1:
+                return saved;
+            case 2:
+                data = bit(data, plane) ? 0xff : 0;
+                break;
+            case 3:
+                mask &= rotate_right(data);
+                data = bit(gc.set_reset, plane) ? 0xff : 0;
+                break;
+        }
+        switch (gc.logical_op) {
+            case 1: data &= saved; break;
+            case 2: data |= saved; break;
+            case 3: data ^= saved; break;
+        }
+        return (data & mask) | (saved & ~mask);
+    }
     // Render clipped packed pixels into borrowed surface using Bt481 color conversion.
     void draw_packed(ss_video_buffer_t &surface, const ss_video_rect_t &clip);
     // Render packed rows with source/palette reuse; return false when another
     // mode or frame change requires the general renderer. surface remains caller-owned.
     bool render_packed_frame(ss_video_buffer_t surface);
     // Render clipped character cells, font/attribute bytes and text cursor into surface.
-    void draw_text(ss_video_buffer_t &surface, const ss_video_rect_t &clip);
+    template<bool Test> void draw_text(ss_video_buffer_t &surface, const ss_video_rect_t &clip);
+    void draw_scan_test(ss_video_buffer_t &surface, const ss_video_rect_t &clip);
     // Combine one bit from each of four planes into a 16-color pixel in surface.
-    void draw_planar(ss_video_buffer_t &surface, const ss_video_rect_t &clip);
+    // Nine adds the zero ninth dot of a nine-dot character clock.
+    template<bool Nine> void draw_planar(ss_video_buffer_t &surface, const ss_video_rect_t &clip);
     // Render chained/unchained VGA 256-color bytes through the palette into surface.
-    void draw_vga256(ss_video_buffer_t &surface, const ss_video_rect_t &clip);
+    template<bool Nine> void draw_vga256(ss_video_buffer_t &surface, const ss_video_rect_t &clip);
     // Render the legacy Color Graphics Adapter compatible two-bit pixel organization.
-    void draw_cga(ss_video_buffer_t &surface, const ss_video_rect_t &clip);
+    template<bool Nine> void draw_cga(ss_video_buffer_t &surface, const ss_video_rect_t &clip);
     // Overlay the Oak two-plane hardware cursor within clip (Oak pp. 34-36).
     void draw_cursor(ss_video_buffer_t &surface, const ss_video_rect_t &clip);
     // Return whether output pixel x,y lies in a programmed blank interval, including wrap.
     bool blanked(int x, int y) const;
     // Resolve attribute palette entry index through VGA color selection and the Bt481.
     VideoColor attribute_color(uint8_t index) const;
+public:
+    // Borrow stored Oak OTI-087X register groups on the synchronized thread.
+    // Inspection must not select an index, reset the attribute flip-flop or
+    // consume RAMDAC data (Oak databook pp. 29-46; IBM VGA register definitions).
+    // Share indexed register decoding with the port path; inspection must not
+    // duplicate split-counter reconstruction (IBM VGA/XGA TRM pp. 2-64 to 2-95).
+    uint8_t crtc_read(unsigned offset) const;
+    uint8_t sequencer_read(uint8_t offset) const { return sequencer.data[offset]; }
+    uint8_t gc_read(unsigned offset) const;
+    uint8_t attribute_read(unsigned offset) const;
+    // The optional backing view retains raw storage for snapshots; the port
+    // view includes aliases and pin values without their I/O side effects.
+    uint8_t extended_read(unsigned offset, bool backing = false) const;
+    const auto &crtc_state() const { return crtc; }
+    const auto &sequencer_state() const { return sequencer; }
+    const auto &graphics_state() const { return gc; }
+    const auto &attribute_state() const { return attribute; }
+    // Extended bytes are backing storage, not live pin/status port responses.
+    uint8_t extended_register(unsigned reg) const { return extended_read(reg, true); }
+    uint8_t extended_index() const { return index; }
+    uint8_t misc_output() const { return miscellaneous_output; }
+    uint8_t feature_control_r() const { return feature_control; }
+    // Board inputs are copied as stored; neither accessor changes address decode.
+    bool output_divided() const { return output_divider; }
+    bool linear_address_enabled() const { return linear_address; }
 };

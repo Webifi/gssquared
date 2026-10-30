@@ -81,7 +81,7 @@ Capture Mouse - see [Using a Mouse](Mouse.md)
     * Alt = Open Apple
     * Left Option = Open Apple
   * Second Sight
-    * Firmware: 1.4-BEEF (original) / 1.5-B5CB / 2.0-1C46
+    * Firmware: 1.4-BEEF (original) / 1.5-CBFC / 2.0-3277
     * Lattice chip: Original (BE8C) / v2.0 (BBB1)
   * Sleep / Busy Wait
   * Mono Helper
@@ -125,7 +125,11 @@ Drive seek/activity sounds play in stereo (drive 1 toward the left, drive 2 towa
       * IIgs monitor
       * Second Sight monitor
       * Both
-  * CRT Shader
+  * Shadow Mask
+
+**Monitor adjust → Apple monitor** adjusts horizontal and vertical size and position. Each click changes one percent, up to twenty percent either way; the menu shows the current value. **Reset** restores the normal framing. Settings are remembered, including in the browser. These controls change the visible window on the raster, not the emulated video signal.
+
+**Monitor adjust → Second Sight VGA / Second Sight RGB** provides the same controls independently for each card monitor type. Defaults preserve the calibrated framing. Both groups are grayed out without **Second Sight (with Z180)**.
 
 **HUD → Stats** toggles the small performance/stats overlay (off by default).  
 **HUD → Drives** toggles the drive-activity strip at the bottom of the screen (on by default).  
@@ -136,7 +140,9 @@ Both are useful when recording video and you want a clean picture. Preferences a
 
 **Second Sight → View → IIgs monitor / Second Sight monitor / Both** selects the main-window picture or shows both independent outputs. Native builds use a separate card window for both; the browser shows them side by side. **F11** cycles the three choices. Both is the default. These view and monitor-type items are grayed out without the real card and remembered in app settings. See [Second Sight](Cards_SecondSight.md).
 
-**CRT Shader** applies a GPU CRT effect. Shortcut: **F7**. Available on macOS, Windows, and Linux. See [Displays](Displays.md).
+**Shadow Mask** toggles the CRT effect. Shortcut: **F7**. The IIgs uses the GPU shader on macOS, Windows, and Linux. Second Sight uses software scanlines in either window and in the browser, including its border; line spacing and interlaced fields follow the card's signal. Off is the default. See [Displays](Displays.md).
+
+GPU-only choices, including **GS Composite** and **Monochrome persistence**, are grayed out when their required shaders or render targets are unavailable. Composite and monochrome still work through the CPU decoder.
 
 Hover speed and display widgets appear automatically when the mouse is over the window and is not captured. There is no Hover Enable menu item. See [On-Screen Display](OSD.md).
 

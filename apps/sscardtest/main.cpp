@@ -1,7 +1,9 @@
 /*
- *   Second Sight reset and component-lifetime check. It creates a card with a
- *   small in-memory ROM, feeds an Apple text-memory write, and compares warm
- *   reset with replacing the firmware and U7 Lattice capture chip equations.
+ *   Second Sight copy, reset and component-lifetime check. It first sends
+ *   back-to-back Apple text writes with the CPU running and halted. It then
+ *   creates a card with a small in-memory ROM, feeds an Apple text-memory write,
+ *   and compares warm reset with replacing the firmware and U7 Lattice capture
+ *   chip equations.
  *   The main thread waits before inspecting worker-owned card state. Assertions
  *   produce the result; main returns zero on success. Source: ROM_BEEF.asm
  *   Reset at https://github.com/jawaidbazyar2/secondsight ; keeping the display
@@ -18,6 +20,38 @@
 // No arguments are used. A normal return means every check completed.
 int main() {
     std::array<uint8_t, SSCard::ROM_SIZE> rom{};
+    // Apple text writes on consecutive slow cycles each reach SRAM through the
+    // U17 copy controller. Zeros run NOPs, so BUSACK follows the next machine
+    // cycle; HALT ($76) leaves the copy edges to the scheduler instead.
+    for (uint8_t opcode : {0x00, 0x76}) {
+        rom[0] = opcode;
+        SSCard copier(rom.data(), 14318180);
+        copier.start_worker();
+        for (unsigned i = 0; i < 64; ++i) {
+            megaii_transfer_t c{40 + 14 * i, uint16_t(0x400 + i), uint8_t(i * 3 + opcode), false};
+            copier.observe(c);
+        }
+        copier.catch_up(40 + 14 * 64 + 100);
+        for (unsigned i = 0; i < 64; ++i)
+            assert(copier.sram_data()[0x400 + i] == uint8_t(i * 3 + opcode));
+        assert(copier.copies == 64);
+    }
+    rom[0] = 0;
+    // A band flag is a level while CAPTURE and PH0 are high (v2.0 LDF
+    // 634-640): a $A4 read inside the window returns 1 and leaves it set; a
+    // read after PH0 falls clears it. A held copy reopens the window.
+    {
+        SSCapture capture;
+        megaii_transfer_t const write{0, 0x2000, 0x11, false};
+        auto const decode = capture.transfer(write);
+        assert(decode.copy && (capture.status(4, 0) & 15) == 0);
+        for (int held = 0; held < 2; ++held) {
+            capture.phase(write, decode, true, false);
+            assert((capture.status(4, 0) & 15) == 1 && (capture.status(4, 0) & 15) == 1);
+            capture.phase(write, decode, false, false);
+        }
+        assert((capture.status(4, 0) & 15) == 1 && (capture.status(4, 0) & 15) == 0);
+    }
     SSCard card(rom.data(), 14318180);
     card.start_worker();
     // Borrow the stopped video object, then seed one EEPROM word to detect

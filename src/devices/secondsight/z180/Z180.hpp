@@ -6,8 +6,8 @@
  *   and copies Apple video bytes into the Oak controller's video memory.
  *   SSCard supplies memory, port and pin callbacks. This file connects the
  *   instruction handlers to the on-chip timers, serial ports and bus scheduler.
- *   SSCard runs the CPU on its worker while a job is outstanding. Without
- *   a worker, including browser builds, the caller executes it directly.
+ *   SSCard normally runs the CPU on its worker, including browser builds.
+ *   Without a worker, the caller executes it directly.
  *   Callbacks run on that same thread and must not enter execution recursively.
  *
  *   PHI is the processor clock. One T-state is one PHI period; a half-PHI is
@@ -32,7 +32,7 @@
  *   pp. 55-64 for the MMU, pp. 65-115 for interrupts, refresh and DMA,
  *   pp. 116-164 for serial ports and timers, and pp. 251-280 for instruction
  *   bus sequences: https://www.zilog.com/docs/z180/um0050.pdf.
- *   The continuation journal and fast paths are emulator mechanisms, not
+ *   The test continuation journal and fast paths are emulator mechanisms, not
  *   extra processor registers. K/N revision differences use Zilog TN0053
  *   and the Z8S180 data sheets cited at the affected operation.
  */
@@ -40,7 +40,6 @@
 #pragma once
 #include <algorithm>
 #include <array>
-#include <csetjmp>
 #include <cstdint>
 #include <functional>
 #include <iosfwd>
@@ -143,13 +142,6 @@ public:
     }
     // Observe asserted/deasserted BUSACK so SSCard can start or stop its bus transfer.
     void set_busack(std::function<void(bool)> callback) { busack_cb = std::move(callback); }
-    // Permit unchanged HALT and recognized polling spans to advance within a
-    // scheduler deadline. Observers, pending inputs or active timers prevent skipping.
-    void set_idle_skipping(bool enabled) { idle_skipping = enabled; }
-    // Bind a board check for safe idle reads: address and write flag in,
-    // nonnegative if safe, negative otherwise. Address 0x100030 identifies
-    // the internal DMA-status port, outside the physical memory address range.
-    void set_idle_memory(std::function<int(uint32_t, bool)> cb) { idle_memory = std::move(cb); }
 #ifdef GS2_SS_TESTING
     // Select the test-only instruction timing comparison path.
     void set_instruction_boundary_timing(bool v) { instruction_boundary_timing = v; }
@@ -159,8 +151,6 @@ public:
 #ifdef GS2_SS_TESTING
     // Enable the test fixture switch for scheduled bus release and cycle timelines.
     void set_scheduled_timeline(bool enabled) { scheduled_timeline = enabled; }
-    // Enable the test fixture switch for batching eligible register instructions.
-    void set_register_batching(bool enabled) { batch_registers = enabled; }
 #endif
     // Certify a physical page for direct reads and retain its data-bus drive
     // side effect; changing the page invalidates logical read caches.
@@ -191,26 +181,63 @@ public:
     // Reset CPU and internal peripherals while preserving elapsed emulated time.
     // The board owns ROM, RAM and external latch reset (UM0050 pp. 25, 45-48).
     void reset();
-    // Deadlines are exact half-PHI boundaries, including partial machine cycles.
-    // Run no later than target, an absolute half-PHI counter. A yield may return
-    // earlier; a partially executed instruction remains resumable.
+    // Use target as both the soft and hard absolute half-PHI deadline.
+    // Production may return at an instruction boundary, but cannot return
+    // with an active handler: it must have enough grant to retire it.
+    // GS2_SS_TESTING alone can yield and resume a partial instruction.
     void run_half_until(uint64_t target);
+    // Start no new instruction after soft_end; hard_limit bounds every grant.
+    // Both are absolute half-PHI times, with soft_end <= hard_limit. An active
+    // production handler stays on the stack until retirement, so the board
+    // must resolve inputs and grant enough time within hard_limit to finish it.
+    void run_half_until(uint64_t soft_end, uint64_t hard_limit);
+    // Move the soft end to now, so execution returns at the next instruction
+    // boundary. The hard limit and scheduler grants still apply until then.
+    void stop_after_instruction() { run_soft_target = half_phi; }
+    // True when no instruction handler remains active on the execution stack.
+    bool at_instruction_boundary() const { return !instruction_active; }
+    // A reset is delivered at an exhausted grant. Its remaining ISA work
+    // has no bus/time effects and is discarded by reset at retirement.
+    void cancel_for_reset() {
+        reset_cancelled = yield_requested = true;
+        instruction_fast = instruction_whole = false;
+        icount = 0;
+        stop_after_instruction();
+    }
+    // True only if the scheduler was called outside an active handler.
+    bool scheduler_at_boundary() const { return !scheduler_in_handler && !instruction_active; }
+    // Trace consumers cannot undo a callback. The board grants only resolved
+    // time while either observer is attached; the emulated CPU is unchanged.
+    bool has_execution_observer() const { return bool(trace) || bool(cycle_observer); }
+#ifdef GS2_SS_TESTING
+    // Test-only inspection of a parked worker uses the same execution flag
+    // as a returned reference call. This flag is host bookkeeping, not a pin.
+    bool park() { bool active = cycle_executing; cycle_executing = false; return active; }
+    // Restore the execution flag saved by park() before resuming the worker.
+    void unpark(bool active) { cycle_executing = active; }
+#endif
+
     // Service due board events on the current CPU stack and return the next
-    // absolute half-PHI deadline. Returning the current time yields normally.
-    // The callback must not execute this CPU recursively.
+    // absolute half-PHI deadline. At a boundary, a deadline at or before now
+    // ends the run. Inside an active production handler, the callback must
+    // instead wait for and grant later resolved time, within the hard limit;
+    // an exhausted grant is an error. The test engine may yield there and
+    // resume from its journal. The callback must not execute this CPU recursively.
     void set_scheduler(std::function<uint64_t()> callback) {
         scheduler = std::move(callback);
         if (!scheduler)
-            bus_release_at = UINT64_MAX;
+            board_edge_at = UINT64_MAX;
     }
-    // Board-owned release time, valid only for the active scheduler call.
-    // The board retains its absolute deadline across CPU checkpoints/exits.
-    void set_bus_release_complete(std::function<void()> callback) { bus_release_complete = std::move(callback); }
-    // Request BUSREQ release at an absolute half-PHI deadline. Return false if
-    // this grant cannot schedule it; the board must retain and service the deadline.
-    bool schedule_bus_release(uint64_t half_deadline);
-    // Return whether this grant has a pending board-owned BUSREQ release deadline.
-    bool bus_release_scheduled() const { return bus_release_at != UINT64_MAX; }
+    // Board callback for a scheduled edge, such as the copy controller's BUSREQ
+    // or its release. An edge is valid only for the active scheduler call; the
+    // board retains its absolute deadline across CPU checkpoints/exits.
+    void set_board_edge(std::function<void()> callback) { board_edge = std::move(callback); }
+    // Call board_edge at an absolute half-PHI deadline inside this grant, with
+    // or without BUSACK. Return false if this grant cannot schedule it; the
+    // board must then retain and service the deadline itself.
+    bool schedule_board_edge(uint64_t half_deadline);
+    // Return whether this grant has a pending board edge.
+    bool board_edge_scheduled() const { return board_edge_at != UINT64_MAX; }
     // Run to target whole PHI since reset; converts to the half-PHI interface.
     void run_until(uint64_t target) { run_half_until(target * 2); }
     // Stop the current grant at the next safe return to the board scheduler.
@@ -219,33 +246,37 @@ public:
         if (executing)
             icount = 0;
     }
+#ifdef GS2_SS_TESTING
     // Advance toward one retired instruction; stop on HALT, BUSACK or the
     // bounded step budget so a debugger cannot hang on an unending external wait.
     void step();
+#endif
     // Return elapsed whole PHI; an unfinished half clock is rounded down.
     uint64_t cycles() const { return half_phi / 2; }
     // Return elapsed half-PHI for scheduling a board event between clock edges.
     uint64_t half_cycles() const { return half_phi; }
+    // Half-PHI periods since the last rising PHI edge, for board logic registered on PHI.
+    unsigned phi_phase() const { return cycle_engine ? phi_half : 0; }
     // Return current PHI clocks per second after CMR/CCR division (UM0050 pp. 49-52).
     uint32_t clock_hz() const;
     // Set the logical asserted state of an interrupt or DMA-request pin.
     // NMI assertions are remembered until serviced; INT0-2 are level requests.
     void set_input(Input input, bool asserted);
-    // Apply board BUSREQ state and invalidate any scheduled release deadline
-    // when the request ends (Zilog UM0050, BUSREQ/BUSACK).
+    // Apply board BUSREQ state; ending the request cancels a pending board
+    // edge (Zilog UM0050, BUSREQ/BUSACK).
     void bus_release_w(bool state) {
         instruction_fast = false;
         bus_released = state;
         if (!state)
-            bus_release_at = UINT64_MAX;
+            board_edge_at = UINT64_MAX;
         if (state && executing)
             request_yield();
     }
-    // Allow serial channels to skip idle receive clocks only while their pin
-    // level and sample phase remain equivalent.
-    void set_asci_idle_clock_gating(bool state) {
-        for (auto &a : asci)
-            a.set_idle_receive_clock_gating(state);
+    // Assert BUSREQ from inside board_edge. The CPU samples it at its next
+    // machine-cycle input sample, so this needs no scheduler return.
+    void bus_request_edge() {
+        instruction_fast = false;
+        bus_released = true;
     }
     // Return the timer output level that can replace address bit A18 (UM0050 p. 164).
     bool tout() const { return tout_level; }
@@ -277,12 +308,7 @@ public:
     std::function<void(const State &)> trace;
     // Derive absolute CPU time from the current oscillator epoch and half-PHI
     // counter, preserving period rounding across execution chunks.
-    Z180Time time() const {
-        uint64_t const delta = half_phi - time_half;
-        if (delta < epoch_rate)
-            return time_base + Z180Time(0, delta * half_period);
-        return update_time_cache();
-    }
+    Z180Time time() const { return epoch_time + Z180Time::from_ticks(half_phi - epoch_half, epoch_rate); }
     // Convert execution ticks to duration at the current divider (half-PHI in the cycle engine).
     Z180Time cycles_to_time(uint64_t n) const;
     // Return complete execution ticks in duration t, rounded down.
@@ -295,33 +321,25 @@ public:
 private:
     Bus bus;
     uint32_t extal_hz;
-    const Silicon silicon;
+    Silicon silicon;
     bool executing = false, yield_requested = false, side_effects_disabled = false;
     std::function<uint64_t()> scheduler;
     uint64_t run_target = 0;
+    uint64_t run_soft_target = UINT64_MAX;
 #ifdef GS2_SS_TESTING
     bool scheduled_timeline = true;
 #else
     static constexpr bool scheduled_timeline = true;
 #endif
-    uint64_t scheduler_limit = 0, bus_release_at = UINT64_MAX;
-    std::function<void()> bus_release_complete;
+    uint64_t scheduler_limit = 0, board_edge_at = UINT64_MAX;
+    std::function<void()> board_edge;
     // Service the board and serial deadlines; return true only when another
     // positive half-PHI budget is available. Never recursively execute an instruction.
-    bool refill_budget();
+    bool refill_budget(bool in_handler = false);
     Z180Time epoch_time;
     uint64_t epoch_half = 0;
     uint32_t epoch_rate = 0;
     uint64_t attoseconds_per_cycle = 0;
-    // Derived interpolation within one whole second of the clock epoch.
-    // Never serialized: observing time must not change a checkpoint.
-    mutable Z180Time time_base;
-    mutable uint64_t time_half = 0;
-    uint64_t half_period = 0;
-    // Return absolute emulated time and cache its whole-second epoch; no hardware state changes.
-    Z180Time update_time_cache() const;
-    // Rebuild derived clock interpolation after reset, restore or a divider change.
-    void reset_time_cache();
     Z180ASCI asci[2] = {Z180ASCI(0), Z180ASCI(1)};
     Z180CSIO csio;
     uint8_t cmr = 0, ccr = 0, rtemp = 0;
@@ -331,21 +349,12 @@ private:
 #ifdef GS2_SS_TESTING
     bool instruction_boundary_timing = false;
 #endif
-    std::function<int(uint32_t, bool)> idle_memory;
-    bool idle_skipping = false;
-    // Return true after consuming safe HALT/SLP cycles, false if individual edges are needed.
-    bool skip_machine_idle();
     // Advance stopped-clock SLP or its wake delay. Return true if this call
     // consumed the interval without ordinary CPU execution (UM0050 pp. 37-41).
     bool run_low_power();
     uint8_t power_mode = 0;
     uint32_t wake_remaining = 0;
-    // Return true after advancing unchanged iterations of the firmware DMA1
-    // wait loop. Recheck its instruction bytes and inputs before each admission.
-    bool skip_machine_poll();
 #ifdef GS2_SS_TESTING
-    // Test-only instruction-engine equivalent of the firmware DMA polling shortcut.
-    bool skip_dma_poll();
     // Test-only duration, in whole PHI, of one halted instruction-engine step.
     int halt_cycles() const;
 #endif
@@ -369,17 +378,33 @@ private:
     // Set an internal input index to logical state 0/1 and retain new NMI/DREQ edges.
     void execute_set_input(int input, int state);
     // Read one physical 20-bit byte through the board callback; an unwired bus returns 0xff.
-    uint8_t read_memory(uint32_t a) { return bus.memory_read ? bus.memory_read(a & 0xfffff) : 0xff; }
+    uint8_t read_memory(uint32_t a) {
+#ifdef GS2_SS_TESTING
+        if (cycle_engine && !cycle_reference) sync_timers();
+#endif
+        return bus.memory_read ? bus.memory_read(a & 0xfffff) : 0xff;
+    }
     // Route a translated CPU write to the board while retaining bus timing effects.
     // Write byte d at physical address a modulo 1 MiB if the board has a write callback.
     void write_memory(uint32_t a, uint8_t d) {
+#ifdef GS2_SS_TESTING
+        if (cycle_engine && !cycle_reference) sync_timers();
+#endif
         if (bus.memory_write)
             bus.memory_write(a & 0xfffff, d);
     }
     // Read an external 16-bit port; return 0xff if the board has no read callback.
-    uint8_t read_io(uint16_t a) { return bus.io_read ? bus.io_read(a) : 0xff; }
+    uint8_t read_io(uint16_t a) {
+#ifdef GS2_SS_TESTING
+        if (cycle_engine && !cycle_reference) sync_timers();
+#endif
+        return bus.io_read ? bus.io_read(a) : 0xff;
+    }
     // Write byte d to an external 16-bit port. Internal registers are decoded before this call.
     void write_io(uint16_t a, uint8_t d) {
+#ifdef GS2_SS_TESTING
+        if (cycle_engine && !cycle_reference) sync_timers();
+#endif
         if (bus.io_write)
             bus.io_write(a, d);
     }

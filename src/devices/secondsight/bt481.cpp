@@ -82,7 +82,7 @@ uint8_t Bt481::vga_r(uint32_t rs, bool effects) {
         case 5:
             return overlay_r(effects);
         case 6:
-            return cra;
+            return command_r();
     }
     return 0xff;
 }
@@ -213,42 +213,7 @@ void Bt481::palette_w(uint8_t data) {
 
 // Multiplex the pixel read mask and indirect registers selected by Command A.
 uint8_t Bt481::mask_r() {
-    uint8_t data = 0xff;
-
-    // Command A bit 0 redirects the mask port to an indirect register;
-    // unimplemented selections read as all ones or ignore the write.
-    if (bit(cra, 0)) {
-        switch (indirect_index) {
-            case READ_MASK_REGISTER:
-
-                data = read_mask;
-                break;
-
-            case OVERLAY_MASK_REGISTER:
-
-                data = overlay_mask_pending;
-                break;
-
-            case COMMAND_REGISTER_B:
-
-                data = crb;
-                break;
-
-            case CURSOR_REGISTER:
-
-                data = cursor;
-                break;
-
-            default:
-
-                data = 0xff;
-                break;
-        }
-    } else {
-        data = read_mask;
-    }
-
-    return data;
+    return indirect_read(bit(cra, 0) ? indirect_index : READ_MASK_REGISTER);
 }
 
 // Write the mask or indirect command/cursor register selected by Command A.

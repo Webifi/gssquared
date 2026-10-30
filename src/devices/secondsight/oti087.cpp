@@ -12,7 +12,8 @@
  *   the model returns RGB (red, green, blue) colors rather than voltages.
  *
  *   SSCard owns OTI087. Its execution thread changes registers and advances
- *   time. The main thread renders or inspects it only after synchronization.
+ *   time. The main thread reads it while card execution is stopped, either
+ *   after synchronization or after claiming a completed scan for presentation.
  *   A latch retains a value for later use; register writes can prepare a new
  *   screen address before the display latches it. An event is a scheduled
  *   change such as the start of vertical blanking. Time is in emulated seconds;
@@ -22,9 +23,13 @@
  *   (https://bitsavers.org/components/oakTechnology/OTI-087_Feb1993.pdf);
  *   IBM VGA/XGA Technical Reference May 1992, VGA registers; Brooktree Bt481A
  *   L481A_C pp. 6-8, 14-20 for palette and color formats.
+ *   OTI-087X revision and software-derived details: Second Sight reference,
+ *   https://github.com/Webifi/second-sight-reference, docs/06-video.md.
  */
 
 #include "oti087.hpp"
+#include <cstdio>
+#include <type_traits>
 #include <algorithm>
 #include <cmath>
 
@@ -89,13 +94,13 @@ uint8_t OTI087::io_read_impl(uint32_t port) {
         case 0x3c0:
             return attribute.index;
         case 0x3c1:
-            return attribute_read();
+            return attribute_read(attribute.index);
         case 0x3c2:
             return 0x60 | (((monitor_override < 0 ? 1 : monitor_override) & 1) << 4) | (crtc.irq_latch << 7);
         case 0x3c4:
             return sequencer.index;
         case 0x3c5:
-            return sequencer.data[sequencer.index];
+            return sequencer_read(sequencer.index);
         case 0x3ca:
             return feature_control;
         case 0x3cc:
@@ -103,33 +108,35 @@ uint8_t OTI087::io_read_impl(uint32_t port) {
         case 0x3ce:
             return gc.index;
         case 0x3cf:
-            return gc_read();
+            return gc_read(gc.index);
     }
     if ((port & 0xfff0) == get_crtc_port()) {
         switch (port & 15) {
             case 4:
                 return crtc.index;
             case 5:
-                return crtc_read();
+                return crtc_read(crtc.index);
             case 10: {
                 // Read side effects must not occur for debugger inspections.
                 if (side_effects)
                     attribute.state = 0;
                 int const vt = crtc.vert_total + 2;
-                int const field_y = vpos() % vt;
-                unsigned const dots = (!gc.alpha_dis && !bit(sequencer.data[1], 0)) ? 9 : 8;
-                unsigned const char_width = dots * horizontal_multiplier();
+                int const field_y = (vpos() % field_total()) / vertical_divisor();
+                unsigned const char_width = char_dots() * horizontal_multiplier();
                 int const hchar = hpos() * pixel_divisor() / char_width;
                 // Blank-end registers store only low counter bits. Subtract
                 // modulo that width, treating zero as a full wrap, then test
                 // distance from blank start. This handles blank intervals
                 // that cross the end of a line or frame.
                 int const hb_len = (crtc.horz_blank_end - crtc.horz_blank_start) & 63;
-                int const vb_len = (crtc.vert_blank_end - crtc.vert_blank_start) & 127;
-                bool const hb = (hchar - crtc.horz_blank_start + crtc.horz_total + 5) % (crtc.horz_total + 5) <
+                int const vb_len = (crtc.vert_blank_end - crtc.vert_blank_start + 1) & 255;
+                int const ht = crtc.horz_total + 5;
+                bool const hb = (hchar + ht - crtc.horz_blank_start % ht) % ht <
                                 (hb_len ? hb_len : 64);
-                bool const vb = (field_y - crtc.vert_blank_start + vt * 2) % vt < (vb_len ? vb_len : 128);
-                return (hb || vb ? 1 : 0) | (vertical_retrace() ? 8 : 0);
+                bool const vb = (field_y + vt - (crtc.vert_blank_start + 1) % vt) % vt < (vb_len ? vb_len : 256);
+                bool const de = hchar < crtc.disp_enable_skew ||
+                                hchar > crtc.horz_disp_end + crtc.disp_enable_skew || field_y > crtc.vert_disp_end;
+                return (hb || vb || de ? 1 : 0) | (vertical_retrace() ? 8 : 0);
             }
         }
     }
@@ -141,12 +148,16 @@ void OTI087::io_w(uint32_t port, uint8_t data) {
     port &= 0xffff;
     // OTI pp29-30: only setup state exposes 0102; 46e8 is write-only.
     if (port == 0x46e8) {
+        record_display_change();
         setup = data & 0x18;
+        update_memory_mapping();
         return;
     }
     if (port == 0x102) {
+        record_display_change();
         if (bit(setup, 4))
             enable = data & 1;
+        update_memory_mapping();
         return;
     }
     if (!enabled())
@@ -168,30 +179,54 @@ void OTI087::io_w(uint32_t port, uint8_t data) {
         return;
     }
     switch (port) {
-        case 0x3c0:
+        case 0x3c0: {
+            unsigned const addr = attribute.index & 31;
+            bool const mode = attribute.state && addr == 0x10;
+            // Index bit 5, Palette Address Source (PAS), enables display output.
+            // Other index bits only select a register. Panning is
+            // recorded when its display latch changes at vertical retrace.
+            if ((!attribute.state && ((data ^ attribute.index) & 0x20)) ||
+                (attribute.state && addr <= 0x14 && addr != 0x13 && data != attribute_read(attribute.index)))
+                record_display_change();
             attribute_write(data);
-            recompute_params();
+            if (mode)
+                recompute_params();
             return;
+        }
         case 0x3c2:
+            record_display_change();
             ext[6] = (ext[6] & 12) | ((data >> 2) & 3);
             eeprom_update();
             miscellaneous_output = data;
+            update_memory_mapping();
             recompute_params();
             return;
         case 0x3c4:
             sequencer.index = data;
             return;
         case 0x3c5:
+            if ((sequencer.index <= 1 || sequencer.index == 3 || sequencer.index == 4) &&
+                sequencer.data[sequencer.index] != data)
+                record_display_change();
             sequencer_write(data);
-            recompute_params();
+            if (sequencer.index == 1)
+                recompute_params();
             return;
         case 0x3ce:
             gc.index = data;
             return;
-        case 0x3cf:
+        case 0x3cf: {
+            bool const display = (gc.index == 5 && ((data ^ gc_read(gc.index)) & 0x60)) ||
+                                 (gc.index == 6 && ((data ^ gc_read(gc.index)) & 1));
+            if (display)
+                record_display_change();
             gc_write(data);
-            recompute_params();
+            if (gc.index == 6)
+                update_memory_mapping();
+            if (display)
+                recompute_params();
             return;
+        }
     }
     if ((port & 0xfff0) == get_crtc_port()) {
         switch (port & 15) {
@@ -199,8 +234,16 @@ void OTI087::io_w(uint32_t port, uint8_t data) {
                 crtc.index = data;
                 break;
             case 5:
+                // Start writes prepare the next retrace latch; they do not
+                // split the current picture. CPU-only/unchanged writes also
+                // need no copied display state.
+                if (crtc.index <= 0x18 && crtc.index != 0x0c && crtc.index != 0x0d &&
+                    crtc.data[crtc.index] != data)
+                    record_display_change();
                 crtc_write(data);
-                recompute_params();
+                if (crtc.index <= 7 || crtc.index == 0x10 || crtc.index == 0x11 ||
+                    crtc.index == 0x12 || crtc.index == 0x17)
+                    recompute_params();
                 break;
             case 10:
                 feature_control = data;
@@ -225,34 +268,42 @@ void OTI087::io_w(uint32_t port, uint8_t data) {
 // 4A/4B cursor colors; 4C cursor enable/order/blink. Others read as $FF.
 // FIFO is the chip's first-in-first-out pixel queue; this model stores its
 // control fields but does not simulate individual queue entries.
-uint8_t OTI087::extended_r() {
-    // Index $00 bit 1 identifies the 087 (clear); index $02 bits 2:1 hold
-    // the memory-size setting. Zero status/power-up values here are model
-    // defaults, not guaranteed silicon reset values.
-    switch (index) {
+// Const inspection and port access instantiate the same decoder. Only the
+// mutable port instance performs EEPROM/latch side effects; the choice is made
+// at compile time, so normal I/O keeps its existing dispatch cost.
+template<class Video>
+uint8_t OTI087::extended_read_impl(Video &video, unsigned offset) {
+    // Second Sight reference, docs/06-video.md, "Which Oak chip": only the
+    // OTI-087X (revision E) is fitted. Oak INSTALL.EXE identifies it by 00=1,
+    // 01 high nibble=2. The low nibble uses zero as a model convention.
+    switch (offset) {
         case 0:
-            return 0;
+        case 1:
+            return video.ext[offset];
         case 2:
-            return ext[2] & 6;
+            return video.ext[2] & 6;
         case 0x0d:
-            return (ext[0x20] & 7) | ((ext[0x21] & 12) << 1) | ((ext[6] & 4) << 3);
+            return (video.ext[0x20] & 7) | ((video.ext[0x21] & 12) << 1) | ((video.ext[6] & 4) << 3);
         case 0x11:
-            return (ext[0x23] & 15) | ((ext[0x24] & 15) << 4);
+            return (video.ext[0x23] & 15) | ((video.ext[0x24] & 15) << 4);
         case 0x14:
-            return (ext[0x14] & 0x87) | ((ext[0x17] & 1) << 3);
+            return (video.ext[0x14] & 0x87) | ((video.ext[0x17] & 1) << 3);
         case 0x18:
-            if (side_effects)
-                recompute_params(); // READY/BUSY can change between clocks
-            return (ext[0x18] & 14) | bit(csel_pins(), 0);
+            if constexpr (!std::is_const_v<Video>) {
+                if (video.side_effects)
+                    video.recompute_params(); // READY/BUSY can change between clocks
+            }
+            return (video.ext[0x18] & 14) | bit(video.csel_pins(), 0);
         case 0x25:
-            return ext[0x24];
+            return video.ext[0x24];
         case 0x36: {
-            uint8_t const data = latch[ext[0x35]];
-            if (side_effects)
-                ext[0x35] = (ext[0x35] + 1) & 7;
+            uint8_t const data = video.latch[video.ext[0x35]];
+            if constexpr (!std::is_const_v<Video>) {
+                if (video.side_effects)
+                    video.ext[0x35] = (video.ext[0x35] + 1) & 7;
+            }
             return data;
         }
-        case 1:
         case 0x0c:
         case 0x0e:
         case 0x0f:
@@ -297,26 +348,57 @@ uint8_t OTI087::extended_r() {
         case 0x4a:
         case 0x4b:
         case 0x4c:
-            return ext[index];
+            return video.ext[offset];
         default:
             return 0xff;
     }
 }
 
+// Debuggers pass an explicit register offset. backing selects stored bytes,
+// including write-only aliases; otherwise return the port value without
+// consuming it (Oak pp. 31-46).
+uint8_t OTI087::extended_read(unsigned offset, bool backing) const {
+    if (backing)
+        return offset < sizeof(ext) ? ext[offset] : 0xff;
+    return extended_read_impl(*this, offset);
+}
+
+// Read the selected register, including EEPROM refresh and automatic
+// wide-latch byte-index increment when side effects are enabled (Oak pp. 41, 46).
+uint8_t OTI087::extended_r() {
+    return extended_read_impl(*this, index);
+}
+
 // Mask reserved Oak register bits and apply bank, clock, cursor and EEPROM
 // pin changes (OTI-087X databook, extended register descriptions).
 void OTI087::extended_w(uint8_t data) {
+    if (index == 3) {
+        // OTI-087 p33; Second Sight reference, register reference, ext $03.
+        // Preserve all bits, including bit3/reserved modes, by convention.
+        // Bit4 applies even with bit7 clear: writes already complete at each
+        // access. Bit6 has no further effect at this transaction granularity.
+        if ((data & 0x87) != (ext[3] & 0x87))
+            record_display_change();
+        if ((data & 0x80) && (data & 7) != 5)
+            std::fprintf(stderr, "Second Sight OTI-087X test register $03 = $%02X: mode %u has no defined output; retaining normal operation\n",
+                         unsigned(data), unsigned(data & 7));
+        // Normal operation for undefined test modes is the convention in
+        // docs/reference/oti087-registers.md, ext $03, not a silicon claim.
+        ext[3] = data;
+        packed_scanout = packed() && !scan_test();
+        return;
+    }
+    if ((index == 0x0d || index == 6 || index == 0x14 || index == 0x15 ||
+         index == 0x21 || (index >= 0x40 && index <= 0x4c)) && data != extended_r())
+        record_display_change();
     uint8_t mask = 0;
     switch (index) {
         case 2:
             mask = 6;
             break; // Keep the memory-size field; bit 0 is not writable in this model.
-        case 3:
-            mask = 0xf7;
-            break; // OTI087 p. 33: coherent memory has no deferred writes to flush
         case 4:
             mask = 0x1f;
-            break; // pp33-34, local bus only
+            break; // p34: revision E permits bit4; local bus only on this AT card.
         case 5:
             mask = 0xff;
             break; // pp34-35
@@ -331,6 +413,7 @@ void OTI087::extended_w(uint8_t data) {
         case 0x0d: // p38, aliases share storage
             ext[0x20] = (ext[0x20] & 8) | (data & 7);
             ext[0x21] = (ext[0x21] & ~12) | ((data >> 1) & 12);
+            packed_scanout = packed() && !scan_test();
             ext[6] = (ext[6] & ~4) | ((data >> 3) & 4);
             eeprom_update();
             recompute_params();
@@ -338,6 +421,7 @@ void OTI087::extended_w(uint8_t data) {
         case 0x11:
             ext[0x23] = (ext[0x23] & 16) | (data & 15);
             ext[0x24] = (ext[0x24] & 16) | (data >> 4);
+            update_memory_mapping();
             return;
         case 0x13:
             mask = 0xf8;
@@ -371,6 +455,7 @@ void OTI087::extended_w(uint8_t data) {
             break;
         case 0x25:
             ext[0x23] = ext[0x24] = data & 31;
+            update_memory_mapping();
             return;
         case 0x30:
             mask = 31;
@@ -408,11 +493,16 @@ void OTI087::extended_w(uint8_t data) {
             return; // read-only straps, unused and undocumented registers
     }
     ext[index] = data & mask;
+    if (index == 0x21)
+        packed_scanout = packed() && !scan_test();
+    if (index == 5 || index == 0x23 || index == 0x24)
+        update_memory_mapping();
     if (index == 6)
         miscellaneous_output = (miscellaneous_output & ~12) | ((data & 3) << 2);
     if (index == 0x18 || index == 6)
         eeprom_update();
-    recompute_params();
+    if (index == 6 || index == 0x14 || index == 0x15 || index == 0x17 || index == 0x18 || index == 0x21)
+        recompute_params();
 }
 
 // Combine VGA Miscellaneous Output and Oak extension bits into clock-select pins.
@@ -440,20 +530,36 @@ uint32_t OTI087::latch_start_addr() {
     return (crtc.start_addr_latch & 0xffff) | ((ext[0x17] & 7) << 16);
 }
 
+// Oak p40: the programmed odd-field retrace position, in raster pixels.
+unsigned OTI087::odd_field_sync_phase() const {
+    return (ext[0x15] & 0x7f) * char_dots() * horizontal_multiplier() / pixel_divisor();
+}
+
 // Evaluate the wrapped CRTC vertical retrace interval at the current beam line.
 bool OTI087::vertical_retrace() {
-    int const ht = timing.total_width, vt = crtc.vert_total + 2;
+    if (!crtc.sync_en)
+        return false;
+    int const ht = timing.total_width, vt = field_total();
     int const field_y = vpos() % vt;
     bool const odd = get_interlace_mode() && vpos() >= vt;
-    unsigned const dots = (!gc.alpha_dis && !bit(sequencer.data[1], 0)) ? 9 : 8;
-    unsigned const char_width = dots * horizontal_multiplier();
     // OTI p40: odd-field vertical retrace starts at the character
     // position in index15, rather than invariably half a scan line.
-    int const phase = odd ? (ext[0x15] & 0x7f) * char_width / pixel_divisor() : 0;
+    int const phase = odd ? odd_field_sync_phase() : 0;
     int const length = (crtc.vert_retrace_end - crtc.vert_retrace_start) & 15;
     int const position = field_y * ht + hpos();
-    int const sync_start = crtc.vert_retrace_start * ht + phase;
-    return (position - sync_start + vt * ht * 2) % (vt * ht) < (length ? length : 16) * ht;
+    int const sync_start = crtc.vert_retrace_start * vertical_divisor() * ht + phase;
+    return (position + vt * ht - sync_start % (vt * ht)) % (vt * ht) <
+           (length ? length : 16) * int(vertical_divisor()) * ht;
+}
+
+// IBM VGA/XGA p2-60: horizontal retrace delay shifts both pulse edges.
+int OTI087::hsync_r() const {
+    unsigned const h = hpos() * pixel_divisor() / (char_dots() * horizontal_multiplier());
+    unsigned const total = crtc.horz_total + 5;
+    unsigned const start = (crtc.horz_retrace_start + crtc.horz_retrace_skew) % total;
+    unsigned const width = (crtc.horz_retrace_end - crtc.horz_retrace_start) & 31;
+    bool const active = crtc.sync_en && (h + total - start) % total < (width ? width : 32);
+    return active ^ bit(miscellaneous_output, 6);
 }
 
 // Apply Oak VSYNC polarity/toggle controls to the beam retrace state
@@ -462,20 +568,21 @@ int OTI087::vsync_r() {
     // OTI-087X data book p. 33: either transition of ext03 bit5 toggles VSYNC.
     // Bit7 qualifies only the global modes in bits2:0. The saved register
     // bit supplies the test phase; repeated writes leave the pin unchanged.
-    // Input Status 1 reports the retrace interval, before polarity/test.
+    // Convention: counters, Input Status 1 and CINT remain unchanged;
+    // only the VGA pin and downstream composite sync see the toggle.
+    // Second Sight reference, docs/reference/oti087-registers.md, ext $03.
     return vertical_retrace() ^ bit(miscellaneous_output, 7) ^ bit(ext[3], 5);
 }
 
 // Test horizontal and vertical blank intervals with their hardware wraparound.
 bool OTI087::blanked(int x, int y) const {
     int const ht = crtc.horz_total + 5, vt = crtc.vert_total + 2;
-    unsigned const dots = (!gc.alpha_dis && !bit(sequencer.data[1], 0)) ? 9 : 8;
-    int const hx = x * pixel_divisor() / (dots * horizontal_multiplier());
-    int const vy = y / (bit(ext[0x14], 7) ? 2 : 1);
+    int const hx = x * pixel_divisor() / (char_dots() * horizontal_multiplier());
+    int const vy = y / ((bit(ext[0x14], 7) ? 2 : 1) * vertical_divisor());
     int const hb = (crtc.horz_blank_end - crtc.horz_blank_start) & 63;
-    int const vb = (crtc.vert_blank_end - crtc.vert_blank_start) & 127;
-    return (hx - crtc.horz_blank_start + ht * 2) % ht < (hb ? hb : 64) ||
-           (vy - crtc.vert_blank_start + vt * 2) % vt < (vb ? vb : 128);
+    int const vb = (crtc.vert_blank_end - crtc.vert_blank_start + 1) & 255;
+    return (hx + ht - crtc.horz_blank_start % ht) % ht < (hb ? hb : 64) ||
+           (vy + vt - (crtc.vert_blank_start + 1) % vt) % vt < (vb ? vb : 256);
 }
 
 // Allocate board VRAM and establish chip state before any firmware access.
@@ -489,6 +596,7 @@ OTI087::OTI087() : memory(VRAM_SIZE) {
 // Reset control and raster scheduling while preserving nonvolatile EEPROM contents.
 void OTI087::reset() {
     sequencer = {};
+    sequencer.address_mask = ~0xc000U;
     crtc = {};
     gc = {};
     attribute = {};
@@ -497,17 +605,32 @@ void OTI087::reset() {
     crtc.line_compare = 0x3ff;
     std::fill(std::begin(ext), std::end(ext), 0);
     std::fill(std::begin(latch), std::end(latch), 0);
+    ext[0] = 1;
+    ext[1] = 0x20;
     ext[4] = 15;
     ext[7] = 0x56;
     ext[8] = 1;
+    // OTI-087X addendum: bit7 is reserved; there is no feature connector.
+    // The read-only AT-bus straps above do not enable an external video path.
     ext[0x10] = 0xff;
     ext[0x19] = 4;
     ext[0x20] = 1;
     ext[0x4c] = 0x10;
     index = setup = enable = 0;
+    packed_scanout = false;
+    rendering_snapshot = false;
+    test_data = 0xff;
+    update_memory_mapping();
     ready_until = now;
     next_latch = std::numeric_limits<double>::infinity();
+    next_interrupt = std::numeric_limits<double>::infinity();
+    update_raster_deadline();
     starts = {{0, 0, 0}};
+    display_changes.clear();
+    display_changes.reserve(16);
+    render_row = nullptr;
+    packed_valid = false;
+    packed_addresses_valid = false;
     ramdac.reset();
     if (ready_callback)
         ready_callback(true);
@@ -559,8 +682,8 @@ void OTI087::access_begin(bool write) {
 }
 
 // Read palette/control state selected by the VGA attribute index.
-uint8_t OTI087::attribute_read() const {
-    unsigned addr = attribute.index & 0x3f;
+uint8_t OTI087::attribute_read(unsigned offset) const {
+    unsigned addr = offset & 0x3f;
     if (addr < 16)
         return attribute.data[addr];
     if ((addr & 31) >= 16 && (addr & 31) <= 20)
@@ -595,27 +718,17 @@ void OTI087::attribute_write(uint8_t data) {
 // Decode VGA plane enables and font selection for the memory and text paths.
 void OTI087::sequencer_write(uint8_t data) {
     sequencer.data[sequencer.index] = data;
+    // IBM p2-54 specifies 64KB with EM clear, but neither IBM nor Oak
+    // gives the dropped address bits. Convention: four 16KB VGA maps;
+    // retain Oak segment bits above the legacy 16-bit plane offset.
+    // Oak packed addressing stays separate.
+    if (sequencer.index == 4)
+        sequencer.address_mask = bit(data, 1) ? ~0U : ~0xc000U;
     if (sequencer.index == 2)
         sequencer.map_mask = data & 15;
     if (sequencer.index == 3) {
         sequencer.char_sel.A = ((data & 12) >> 1) | ((data & 0x20) >> 5);
         sequencer.char_sel.B = ((data & 3) << 1) | ((data & 0x10) >> 4);
-    }
-}
-
-// Combine rotated CPU data with a VGA read latch under the selected bit mask.
-uint8_t OTI087::vga_logical_op(uint8_t data, uint8_t plane, uint8_t mask) const {
-    // Operation 0 replaces enabled bits, 1 ANDs, 2 ORs, 3 XORs with the
-    // retained plane byte. Bits outside mask always keep their latch value.
-    switch (gc.logical_op & 3) {
-        case 0:
-            return (data & mask) | (gc.latch[plane] & ~mask);
-        case 1:
-            return (data | ~mask) & gc.latch[plane];
-        case 2:
-            return (data & mask) | gc.latch[plane];
-        default:
-            return (data & mask) ^ gc.latch[plane];
     }
 }
 
@@ -657,7 +770,7 @@ void OTI087::recompute_params() {
     // usable geometry until the totals describe a nonempty visible rectangle.
     if (!crtc.horz_total || !crtc.horz_disp_end || !crtc.vert_disp_end)
         return;
-    unsigned dots = (!gc.alpha_dis && !bit(sequencer.data[1], 0)) ? 9 : 8;
+    unsigned dots = char_dots();
     unsigned mult = horizontal_multiplier(), div = pixel_divisor();
     unsigned interlace = get_interlace_mode() ? 2 : 1;
     // VGA stores horizontal total minus five character clocks, display end
@@ -666,32 +779,42 @@ void OTI087::recompute_params() {
     // Oak databook pp. 39-40). Convert all of them to output pixels/rows.
     int ht = (crtc.horz_total + 5) * dots * mult / div;
     int hd = (crtc.horz_disp_end + 1) * dots * mult / div;
-    int vt = (crtc.vert_total + 2) * interlace;
-    int vd = (crtc.vert_disp_end + 1) * interlace;
+    int vt = field_total() * interlace;
+    int vd = (crtc.vert_disp_end + 1) * vertical_divisor() * interlace;
     if (!hd || hd >= ht || !vd || vd >= vt)
         return;
     uint32_t clock = vclk_hz() / (bit(sequencer.data[1], 3) ? 2 : 1) / (output_divider ? 2 : 1);
-    timing = {hd, vd, ht, vt, clock, div};
+    // Retain the unrounded CRTC counts for host monitor scaling only. Update
+    // them with the same valid raster snapshot used by frame presentation.
+    if (timing.width != hd || timing.height != vd || timing.total_width != ht || timing.total_height != vt)
+        display_changes.clear();
+    timing = {hd, vd, ht, vt, clock, div, unsigned(crtc.horz_disp_end + 1), unsigned(crtc.horz_total + 5),
+              vclk_hz(), interlace == 2, bool(bit(sequencer.data[1], 3)), output_divider};
     // Keep the last blank-start time when firmware retimes the raster.
     // Only a shortened period that has already elapsed starts a new blank.
     // This is the model's phase convention during partial mode programming.
     if (now - blank_origin >= timing.frame_period()) {
         blank_origin = now;
-        next_frame = now + timing.line_period() * (vt - vd);
+        next_frame = now + timing.line_period() * (vt - active_end_line());
     }
-    next_blank = now + time_until_pos(vd);
+    next_blank = now + time_until_pos(active_end_line());
     next_line_zero = now + time_until_pos(0);
     if (vpos() == 0)
         starts = {{0, crtc.start_addr, attribute.pel_shift}};
 
     schedule_display_latch();
+    double irq_delay = time_until_pos((crtc.vert_disp_end + 1) * vertical_divisor());
+    if (get_interlace_mode())
+        irq_delay = std::min(irq_delay, time_until_pos((crtc.vert_disp_end + 1) * vertical_divisor() + field_total()));
+    next_interrupt = now + irq_delay;
+    update_raster_deadline();
 }
 
 // Locate the raster line relative to the retained vertical-blank epoch.
 int OTI087::vpos() const {
     double pixel_time = timing.pixel_period();
     int line = int((now - blank_origin + pixel_time / 2) / timing.line_period());
-    return (timing.height + line) % timing.total_height;
+    return (active_end_line() + line) % timing.total_height;
 }
 
 // Locate the pixel within that raster line using the same rounded clock periods.
@@ -705,7 +828,7 @@ int OTI087::hpos() const {
 // Find the next occurrence of a beam position, wrapping into the next frame.
 double OTI087::time_until_pos(int y, int x) const {
     double pixel_time = timing.pixel_period();
-    int line = (y + timing.total_height - timing.height) % timing.total_height;
+    int line = (y + timing.total_height - active_end_line()) % timing.total_height;
     double at = blank_origin + timing.line_period() * line + x * pixel_time;
     // A position at the current rounded pixel is already reached. Advance
     // by whole frames until it is strictly ahead, avoiding a zero-time event loop.
@@ -714,41 +837,54 @@ double OTI087::time_until_pos(int y, int x) const {
     return at - now;
 }
 
-// Schedule start-address/pan latching at programmed vertical blank, including
-// the second field when interlace is selected.
+// IBM VGA/XGA p2-67: start address latches at retrace, independently of
+// blanking and the interrupt. Applying Oak p40's odd VSYNC phase to that
+// field's latch is a model inference, not a specified Oak latch rule.
 void OTI087::schedule_display_latch() {
-    unsigned total = crtc.vert_total + 2;
-    unsigned blank = crtc.vert_blank_start % total;
-    double delay = time_until_pos(blank);
-    if (get_interlace_mode())
-        delay = std::min(delay, time_until_pos(blank + total));
+    unsigned total = field_total();
+    unsigned retrace = (crtc.vert_retrace_start * vertical_divisor()) % total;
+    double delay = time_until_pos(retrace);
+    if (get_interlace_mode()) {
+        delay = std::min(delay, time_until_pos(retrace + total, odd_field_sync_phase()));
+    }
     next_latch = now + delay;
 }
 
-// Latch the scanout address/pan and vertical interrupt; record a row boundary
-// only if the visible addressing changes.
+// Latch the scanout address/pan; record a boundary only when they change.
 void OTI087::display_latch() {
     uint32_t address = latch_start_addr();
     uint8_t pan = attribute.pel_shift_latch;
     // Keep only addressing changes, not one entry per scan line. The renderer
     // later replays these row boundaries without executing the chip again.
     if (address != crtc.start_addr || pan != attribute.pel_shift) {
+        record_display_change();
         starts.push_back({vpos(), address, pan});
         crtc.start_addr = address;
         attribute.pel_shift = pan;
     }
-    if (!crtc.irq_latch && !crtc.irq_disable && crtc.irq_clear) {
+    schedule_display_latch();
+}
+
+// IBM p2-70 sets the pending latch at display end even while IRQ is disabled.
+// The enable bit gates the pin; clear holds the flip-flop reset.
+void OTI087::vertical_interrupt() {
+    if (!crtc.irq_latch && crtc.irq_clear) {
         crtc.irq_latch = 1;
         if (cint_callback)
-            cint_callback(true);
+            cint_callback(cint_r());
     }
-    schedule_display_latch();
+    next_interrupt = now + timing.line_period() * field_total();
+}
+
+// Recompute only when one of the raster deadlines changes.
+void OTI087::update_raster_deadline() {
+    next_raster = std::min({next_frame, next_blank, next_line_zero, next_latch, next_interrupt});
 }
 
 // Return the earliest raster, IOCHRDY or EEPROM deadline to the card scheduler.
 double OTI087::next_event() const {
     double ready = ready_until > now ? ready_until : std::numeric_limits<double>::infinity();
-    return std::min({next_frame, next_blank, next_line_zero, next_latch, ready, eeprom.deadline(now)});
+    return std::min({next_raster, ready, eeprom.deadline(now)});
 }
 
 // Dispatch all chip events through the requested emulated time, preserving
@@ -765,21 +901,27 @@ void OTI087::advance(double seconds) {
         bool ready = ready_until > now && event == ready_until;
         now = event;
         ramdac.advance(now);
-        if (event == next_frame) {
-            frames++;
-            next_frame = std::numeric_limits<double>::infinity();
+        if (event == next_raster) {
+            if (event == next_frame) {
+                frames++;
+                next_frame = std::numeric_limits<double>::infinity();
+            }
+            if (event == next_line_zero) {
+                starts = {{0, crtc.start_addr, attribute.pel_shift}};
+                display_changes.clear();
+                next_line_zero = now + timing.frame_period();
+            }
+            if (event == next_blank) {
+                blank_origin = now;
+                next_blank = now + timing.frame_period();
+                next_frame = now + timing.line_period() * (timing.total_height - active_end_line());
+            }
+            if (event == next_latch)
+                display_latch();
+            if (event == next_interrupt)
+                vertical_interrupt();
+            update_raster_deadline();
         }
-        if (event == next_line_zero) {
-            starts = {{0, crtc.start_addr, attribute.pel_shift}};
-            next_line_zero = now + timing.frame_period();
-        }
-        if (event == next_blank) {
-            blank_origin = now;
-            next_blank = now + timing.frame_period();
-            next_frame = now + timing.line_period() * (timing.total_height - timing.height);
-        }
-        if (event == next_latch)
-            display_latch();
         if (ready && ready_callback)
             ready_callback(true);
         if (ee && (ext[0x18] & 4))

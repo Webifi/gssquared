@@ -15,19 +15,27 @@
  *   Mega II is the IIgs chip providing the Apple II memory and expansion bus.
  *   Host ticks count the IIgs 14.31818 MHz clock, about 70 ns per tick.
  *   A slow Apple bus cycle normally takes fourteen ticks. PHI is the Z180
- *   processor clock; one
- *   T-state is one PHI period and a half-PHI is one rising or falling edge step.
+ *   processor clock. A T-state is one PHI period; a half-PHI is the interval
+ *   between successive rising and falling edges. PH0 is the Apple bus clock.
+ *   ACK acknowledges a captured host event. RUN permits another event;
+ *   STALL holds the Apple access until the acknowledgement has settled.
  *   BUSREQ asks the Z180 to give up its bus; BUSACK says it has done so. DMA
  *   (direct memory access) copies bytes without executing a CPU instruction.
  *   DREQ is a request input to one of the Z180's two DMA channels.
  *
- *   IRQ is an interrupt request. RTS is the
- *   serial request-to-send output, wired here to select read-only memory (ROM).
+ *   IRQ is an interrupt request. Card-to-IIgs IRQ delivery can be late:
+ *   the worker records edges, but the host collects and applies them only
+ *   at synchronization or presentation points. The host CPU is not rewound
+ *   to an edge's timestamp. Relaxed synchronization therefore preserves edge
+ *   order without promising cycle-exact interrupt delivery.
+ *   RTS is the serial request-to-send output, wired here to select ROM
+ *   (read-only memory).
  *   EPROM is the erasable read-only chip containing the firmware. EEPROM
  *   is electrically erasable memory holding the video configuration.
  *
  *   The application owns SSCard. The worker alone runs chip state while a job
- *   is outstanding. Host reads, reset and presentation first synchronize().
+ *   is outstanding. Host reads and reset synchronize; presentation may use
+ *   the previous card frame while the worker finishes the next one.
  *   Sources: Second Sight manual, card operation; Jawaid
  *   Bazyar's ROM_BEEF.asm (Reset, ClearScreen and host-command routines), at
  *   https://github.com/jawaidbazyar2/secondsight . Zilog UM005004-0918 pp. 16-30
@@ -38,8 +46,10 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <functional>
 #include <memory>
+#include <utility>
 #include <vector>
 #include "ss_capture.hpp"
 #include "z180/Z180.hpp"
@@ -53,14 +63,21 @@ public:
     static constexpr size_t ROM_SIZE = 0x20000;
     static constexpr size_t SRAM_SIZE = 0x20000;
 
+    // Inspection keeps an exact fence. A monitor can instead borrow the
+    // latest card scan without waiting for the Apple frame deadline.
+    enum class Presentation { Exact, Latest };
+
     // Copy ROM_SIZE bytes from rom; ticks_per_second is the host clock rate.
     // lattice_map selects the U7 Lattice chip equations used for capture.
-    explicit SSCard(const uint8_t *rom, uint64_t ticks_per_second, SSCapture::LatticeMap lattice_map = SSCapture::LatticeMap::BE8C);
+    explicit SSCard(const uint8_t *rom, uint64_t ticks_per_second, SSCapture::LatticeMap lattice_map = SSCapture::LatticeMap::BE8C,
+                    Presentation presentation = Presentation::Exact);
     // Finish outstanding worker jobs before destroying the chips and callbacks.
     ~SSCard();
-    // Start native asynchronous execution; browser execution stays synchronous.
+    // Start asynchronous card execution on native or browser pthread builds.
     void start_worker();
-    // Wait for all submitted jobs and deliver their Apple IRQ edges on the host.
+    // Stop after all submitted jobs and collect their IRQ edges. This alone
+    // does not deliver them; catch_up(), observe() and presentation apply
+    // collected edges through their requested host timestamp.
     void synchronize();
     // Reset at an absolute host tick; power_on also clears RAM and card latches.
     void reset(uint64_t ticks, bool power_on = false);
@@ -69,7 +86,24 @@ public:
     // Observe one Apple access; update read data and return extra RDY wait ticks.
     uint64_t observe(megaii_transfer_t &transfer);
     // Drain captured accesses and run the card through this absolute host tick.
-    void catch_up(uint64_t ticks);
+    // wait=false lets independent Apple presentation overlap the remaining work;
+    // the presenter must synchronize or claim stopped Oak before reading it.
+    void catch_up(uint64_t ticks, bool wait = true);
+    // Ask the worker to stop Oak while the Apple picture is drawn. ticks is
+    // the absolute host time; exact forces a full synchronization. In Latest
+    // mode this request also delivers already-published IRQ edges, possibly late.
+    void request_presentation(uint64_t ticks, bool exact = false);
+    // Return true only after claiming stopped Oak state. False means reuse
+    // the previous texture. A scan over 1/60 second old forces synchronization.
+    bool begin_presentation(uint64_t ticks, bool exact = false);
+    // Release a claimed scan or cancel an unclaimed request; host thread only.
+    void end_presentation();
+    // The next full-state observation bounds instruction-boundary grants.
+    // Zero keeps stepping, breakpoints and standalone callers exact.
+    void set_observation_limit(uint64_t ticks);
+    // Host thread, after every Mega II access before ticks has been observed:
+    // let the card thread run through ticks without waiting for a request.
+    void publish_time(uint64_t ticks);
 #ifdef GS2_SS_TESTING
     // Fixture switch: execute each transfer separately when disabled.
     void set_batching(bool enabled) { batch_execution = enabled; }
@@ -111,6 +145,9 @@ public:
     uint8_t interrupt_bus_byte() const { return bus_valid ? bus_data : 0xff; }
     // Whether the retained card bus byte has a known driver since power-on.
     bool data_bus_driven() const { return bus_valid; }
+    // U12 RGB timing logic combines the electrical sync pins in negative
+    // logic: either low pulls XSYNC low (reference docs/07-glue-logic.md).
+    int composite_sync() { return vga.hsync_r() & vga.vsync_r(); }
     // True maps ROM over the low 128 KiB while firmware starts up.
     bool overlay_enabled() const { return rom_overlay; }
     // Last observed host tick, including any returned RDY wait.
@@ -119,23 +156,37 @@ public:
     uint64_t host_tick_rate() const { return ticks_per_second; }
     // Diagnostic totals: copied bytes, firmware events, held accesses, held ticks.
     uint64_t copies = 0, events = 0, stalls = 0, stall_ticks = 0;
-    // Main-thread callback: true asserts the card interrupt on the Apple CPU.
+    // Host-thread callback: true asserts the card interrupt on the Apple CPU.
+    // This is delivery time, which may follow the recorded card-edge time.
     std::function<void(bool)> irq_handler;
+    // Core-thread progress through resolved RDY falls; only autonomous
+    // motherboard devices advance while the retained 65816 access waits.
+    std::function<void(uint64_t)> held_progress;
+    // The host may retire a hold before consuming its worker notification.
+    // Compare with the motherboard clock, not the last posted card access.
+    std::function<uint64_t()> host_clock_ticks;
 
 private:
     // 36 MHz board oscillator; Z8S180 reset divides EXTAL by two.
     static constexpr uint32_t EXTAL_HZ = 36'000'000;
-    // The scheduler uses fourteen host ticks for a nominal slow Mega II cycle.
-    static constexpr uint64_t MEGAII_CYCLE_TICKS = 14;
-    // Modelled U17 copy controller grant duration in PHI, including the write.
-    static constexpr unsigned COPY_PHI = 7;
-    // Host acknowledgement write timing, in processor PHI periods.
-    static constexpr unsigned ACK_WRITE_PHI = 2;
+    // U17 copy controller (undumped 18CV8), the MAME 9f0b5ae7df model of the
+    // reference's "Copy timing budget" (07-glue-logic): BUSREQ at the first PHI
+    // edge after CATCH, /WR at the first PHI edge after BUSACK, then two PHI of
+    // /WR, the shortest registered pulse meeting the SRAM's 60 ns at 18 MHz.
+    static constexpr unsigned COPY_WRITE_PHI = 2;
+    // U15 Z180 memory decoder (undumped) has no read/write input: three waits,
+    // the least common count meeting the Oak's worst-case write at 18 MHz
+    // (reference 05-z180, "External waits and worst-case margins").
+    static constexpr unsigned FORCED_MEMORY_WAITS = 3;
     // Scheduler upper bound only; the acknowledge edge can end a slice sooner.
     static constexpr unsigned HANDSHAKE_SLICE_PHI = 128;
     std::array<uint8_t, ROM_SIZE> rom{};
     std::array<uint8_t, SRAM_SIZE> sram{};
     SSCapture capture;
+    // Host-side decode must not read capture while the worker changes it.
+    // The installed Lattice map changes only at a stopped hardware change.
+    SSCapture::LatticeMap host_lattice_map;
+    const Presentation presentation_mode;
     OTI087 vga;
     std::unique_ptr<Z180> cpu;
     std::vector<megaii_transfer_t> transfers;
@@ -143,7 +194,52 @@ private:
     static constexpr size_t QUEUE_SIZE = 512;
     struct Worker;
     std::unique_ptr<Worker> worker;
-    bool work_pending = false, host_pending = false, host_irq = false;
+    static constexpr uint64_t NO_TICKS = UINT64_MAX;
+    // Host thread: the latest posted entry stops the card at its time.
+    bool stopping_post = false;
+    // Publish ordinary entries together; a result or a time grant flushes
+    // every earlier input first. This is host transport, not a card FIFO.
+    static constexpr unsigned PUBLISH_ENTRIES = 32;
+    void wake_card();
+    void publish_entries();
+    bool host_pending = false, host_irq = false;
+    // Host-thread counts of entries posted to the card thread and of entries
+    // whose results and IRQ edges the host has already taken.
+    uint64_t submitted = 0, synchronized = 0;
+    uint64_t announced = 0, consumer_limit = 0;
+    // Host time last published to the card thread and last waited for, and
+    // the entry count after the latest posted possible Lattice event.
+    uint64_t published_time = 0, synchronized_time = 0;
+    uint64_t shared_time = 0, delivered_horizon = 0;
+    bool pending_time_grant = false;
+    // Host tick of the latest posted possible Lattice event.
+    uint64_t event_ticks = 0;
+    // Card thread to host, on their own cache line so the host's checks do
+    // not take the card's working fields from its core: the latest accepted
+    // host tick << 1 | the pending flag, and the host tick, rounded up, of
+    // the latest acknowledge.
+    struct alignas(64) EventState {
+        std::atomic<uint64_t> state{0};
+        std::atomic<uint64_t> ack_ticks{0};
+    } event_line;
+    // Card thread: publish the pending flag after accepting at accepted_ticks.
+    void publish_event_state(uint64_t accepted_ticks);
+    // Latest host tick of any posted entry; the card runs at least that far.
+    uint64_t posted_through = 0;
+    // True when no Lattice event can be pending at a host access at ticks.
+    bool event_clear(uint64_t ticks) const;
+    // Working state used to publish a zero-hold result.
+    uint64_t event_accepted_tick = 0, event_ready_tick = 0;
+    bool event_ready = true;
+    std::vector<std::pair<Z180Time, bool>> irq_edges;
+    // Host thread: apply collected edges whose timestamps are at or before ticks.
+    // Several late edges may be delivered before the next IIgs instruction.
+    void deliver_irq(uint64_t ticks);
+    // Publish the resolved end of a held Apple bus period, in host ticks.
+    void progress(uint64_t ticks);
+    // Host thread: advance motherboard devices through published hold time.
+    // IRQ collection and delivery are separate from this clock update.
+    void consume_progress();
     bool queued_event = false;
 #ifdef GS2_SS_TESTING
     bool batch_execution = true;
@@ -155,12 +251,39 @@ private:
     bool bus_valid = false;
     uint64_t ticks_per_second;
     uint64_t observed_ticks = 0;
+    std::atomic<uint64_t> observation_limit{0};
+    // Reuse the direct access slot; no allocation belongs in a host bus cycle.
+    std::vector<megaii_transfer_t> direct_transfer{megaii_transfer_t{}};
     uint64_t next_transfer_tick = 0;
     bool bus_request = false, ax_selected = false, ack_selected = false;
-    uint8_t ax_nibble = 0, copy_data = 0;
+    uint8_t ax_nibble = 0;
+    // U5/U6 address latches with the bank bit, loaded by every rising CATCH.
     uint32_t copy_address = 0;
-    Z180Time catch_until, host_epoch;
+    // The U17 copy controller remembers one CATCH edge; copy_deadline is its
+    // next registered edge.
+    enum class CopyPhase : uint8_t { idle, synchronize, busack, write_start, write_end };
+    CopyPhase copy_phase = CopyPhase::idle;
+    bool copy_pending = false;
+    // copy_cpu_edge is the copy controller edge the CPU calls back at
+    // (BUSREQ or its release).
+    Z180Time copy_deadline = Z180Time::never, copy_cpu_edge, host_epoch;
+    bool copy_in_cpu_edge = false;
+    // Retained slot pins and feedback state, including ACK edges between
+    // PH0 transitions (original BE8C LDF 424-445).
+    megaii_transfer_t phase_transfer;
+    ss_capture_result_t phase_decode;
+    bool phase_high = false;
+    Z180Time ready_since;
+    void phase(bool high, Z180Time timestamp);
+    [[gnu::always_inline]] inline void transfer_rise(megaii_transfer_t &transfer, Z180Time now, Z180Time rise, bool &started, bool &high);
+    [[gnu::always_inline]] inline bool transfer_fall(megaii_transfer_t &transfer, Z180Time sample, uint64_t fall, bool held);
+    [[gnu::always_inline]] inline void service_card_deadlines(Z180Time now);
+    [[gnu::always_inline]] inline Z180Time limit_card_deadline(Z180Time end);
     uint32_t cpu_hz = EXTAL_HZ / 2;
+    // Periods at cpu_hz: one execution tick, one PHI and the copy /WR. Each
+    // copy uses them several times; converting each time costs divisions.
+    Z180Time tick_period, phi_period, copy_write_period;
+    void update_periods();
     double wait_seconds[2] = {-1, -1};
     unsigned wait_phi[2]{};
     uint32_t wait_rate[2]{};
@@ -177,17 +300,45 @@ private:
     // Publish stable ROM/SRAM read pages to the CPU after overlay/address changes.
     // Pages selecting a device retain callbacks so their side effects are not skipped.
     void update_direct_reads();
-    // Finish the pending U17 copy controller SRAM write and release BUSREQ.
-    // The CPU must already have granted the bus before this deadline can complete.
-    void complete_copy();
-    // Try to schedule the copy deadline inside the current CPU grant; return
-    // false when run_to must service it explicitly instead.
-    bool schedule_copy_release();
+    // Run the U17 copy controller edges due at or before now: BUSREQ, the
+    // SRAM write from the live latches, then the release. Every pin edge
+    // checks, so keep the idle test inline.
+    void advance_copy(Z180Time now) {
+        if (copy_deadline <= now)
+            run_copy_edges(now);
+    }
+    void run_copy_edges(Z180Time now);
+    // Record one rising CATCH at when; the U5/U6 address latches already hold
+    // its address.
+    // now is the current card time, which the PHI edge search needs.
+    void copy_capture(Z180Time when, Z180Time now);
+    // BUSACK while the U17 copy controller requests the bus: /WR starts at
+    // the next PHI edge.
+    void copy_grant(Z180Time when, Z180Time now);
+    // The next copy controller edge the CPU must stop at; never while the
+    // CPU itself holds that edge as a scheduled board edge.
+    Z180Time copy_wake() const {
+        if (copy_phase == CopyPhase::idle || copy_phase == CopyPhase::busack || cpu->board_edge_scheduled())
+            return Z180Time::never;
+        return copy_deadline;
+    }
+    // The first rising PHI edge after when; now is the current card time,
+    // and when is at most one PHI before it.
+    Z180Time next_phi_edge(Z180Time when, Z180Time now) const;
+    // Try to schedule the copy controller's BUSREQ release inside the current
+    // CPU grant; return false when the scheduler must service it instead.
+    bool schedule_copy_release(Z180Time now);
+    // Have the CPU call back at copy controller edge at, inside its grant.
+    // False leaves the edge to copy_wake().
+    bool schedule_copy_edge(Z180Time at, Z180Time now);
     // Convert a video event in absolute seconds to integer card time, rounding
     // forward. Cache unchanged deadlines to avoid repeated floating-point conversion.
     Z180Time vga_deadline(double event);
     // Convert absolute host ticks to card time using a retained whole-second epoch.
     Z180Time transfer_deadline(uint64_t ticks);
+    // True if execution passed this host input by at least one half-PHI.
+    // A smaller difference is the rounding needed to reach a CPU clock edge.
+    bool input_passed(uint64_t ticks);
     // Accept a new processor PHI rate hz and invalidate cached wait conversions.
     void clock_changed(uint32_t hz);
     // Advance CPU and video up to an absolute card deadline; awaiting_ack stops
@@ -201,13 +352,31 @@ private:
     uint64_t accept_transfer(megaii_transfer_t &transfer, Z180Time timestamp);
     // Process queue in order and run through absolute host ticks. Queued
     // accesses cannot return an unreported RDY delay; such a delay is an invariant failure.
-    void run_transfers(std::vector<megaii_transfer_t> &queue, uint64_t ticks);
+    uint64_t run_transfers(std::vector<megaii_transfer_t> &queue, uint64_t ticks, uint64_t hard_limit = 0);
     // Submit queued accesses through host ticks. If wait is true, return only
     // after completion; access is an optional final synchronous access. Return its
     // RDY wait ticks. Caller storage must survive the submitted job.
     uint64_t dispatch(uint64_t ticks, bool wait, megaii_transfer_t *access = nullptr);
-    // Record an asserted/deasserted Apple interrupt request on the worker;
-    // synchronize delivers it to the host CPU in order.
+    // Post one worker entry: a plain transfer, or a time with an optional
+    // final access whose RDY ticks are written to held. Host thread only.
+    void post(megaii_transfer_t const &transfer, megaii_transfer_t *access, uint64_t *held, uint64_t ticks, bool plain,
+              bool conditional = false);
+    // Host thread, after the card has completed every posted entry: rethrow
+    // its error and collect its Apple IRQ edges for later timestamped delivery.
+    void finish_synchronize();
+    // Move worker IRQ edges into host storage under their own lock. This does
+    // not stop Oak or invoke irq_handler; deliver_irq performs that step.
+    void collect_irq();
+    // Worker loop: retain the active instruction stack across bus deadlines,
+    // result waits and presentation pauses until reset or shutdown.
+    void stream_entries();
+    // Cancel a parked handler at its exact tick before applying reset.
+    void prepare_reset();
+    // Wait for the worker to complete count entries.
+    void wait_for(uint64_t count);
+    // Record an asserted/deasserted Apple interrupt request on the worker.
+    // Host synchronization or presentation collects edges in order; delivery
+    // can be later than the edge's emulated time.
     void publish_irq(bool asserted);
     // Translate the Z180 video window address plus board half/linear selections
     // into an Oak address. This changes address wiring, not memory contents.

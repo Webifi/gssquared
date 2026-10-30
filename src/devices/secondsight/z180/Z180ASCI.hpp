@@ -20,8 +20,7 @@
  *   Each channel belongs to Z180 and runs only on its execution thread.
  *   Second Sight uses K silicon, with one receive byte; N silicon has four.
  *   Sources: Zilog UM005004-0918 pp. 116-146 (ASCI) and Zilog TN0053 p. 3
- *   (K/N receive buffering and error recovery). Timer parking is a software
- *   shortcut for an unchanged high receive pin, not a hardware stop mode.
+ *   (K/N receive buffering and error recovery).
  */
 
 #pragma once
@@ -43,8 +42,6 @@ public:
         clock_rate = hz;
         update_clock();
     }
-    // Permit skipping unchanged idle-high receive samples when v is true.
-    void set_idle_receive_clock_gating(bool v) { idle_receive_clock_gating = v; }
     // Return the next serial deadline, or never while I/O clocks are stopped.
     Z180Time next_event() const {
         return io_stopped ? Z180Time::never : std::min(receive_timer.deadline, transmit_timer.deadline);
@@ -109,7 +106,7 @@ public:
     // Replace the time constant high byte with data and recalculate baud periods (UM0050 pp. 143-146).
     void astch_w(uint8_t data);
 
-    // Set receive-pin level state (0/1). A falling start edge restarts any parked sample clock.
+    // Set the receive-pin level (0/1); the receiver samples it on its clock.
     void rxa_wr(int state);
     // Set CTS pin level state (0/1) and recompute transmit-ready status (UM0050 pp. 138-139).
     void cts_wr(int state);
@@ -120,7 +117,7 @@ public:
     void cka_wr(int state);
 
     // Return nonzero if an enabled transmit/receive condition requests a CPU interrupt (UM0050 p. 140).
-    int check_interrupt() const {
+    [[gnu::always_inline]] int check_interrupt() const {
         uint8_t const rx = (asci_stat & ((ext && (asci_ext & 0x80)) ? 0x70 : 0xf0)) | (id ? 0 : (asci_stat & 4));
         return ((asci_stat & 3) == 3) || ((asci_stat & 8) && rx);
     }
@@ -140,10 +137,8 @@ private:
     void output_txa(int txa_arg);
     // Publish request-to-send voltage rts_arg only when it changes; this updates Second Sight ROM selection.
     void output_rts(int rts_arg);
-    // Service one internal sample deadline, then park only an idle high input.
+    // Service one internal receive sample deadline.
     void receive_clock();
-    // Suppress repeated high-input samples while preserving their phase; a low RXA edge wakes them.
-    void park_receive_clock();
     // Apply break mode and recalculate clocks after extension storage is updated.
     // The data argument is retained by the interface; this helper uses asci_ext.
     void asext_base_w(uint8_t data);
@@ -154,9 +149,8 @@ private:
     uint32_t clock_rate = 18'000'000;
     unsigned id;
     bool ext = true; // N/SL1919 enhancements; false for the card's K/SL1960.
-    Z180Time bit_rate = Z180Time::never, sample_rate = Z180Time::never, receive_epoch;
+    Z180Time bit_rate = Z180Time::never, sample_rate = Z180Time::never;
     Z180Timer receive_timer, transmit_timer;
-    bool receive_parked = false, idle_receive_clock_gating = false;
     // Emit the next framed bit, or enter idle when no byte remains (UM0050 pp. 121, 140-141).
     void transmit_edge();
     // Detect a low start bit, then sample data near bit centers and complete a frame (UM0050 pp. 118-120, 141).

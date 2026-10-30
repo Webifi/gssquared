@@ -15,19 +15,27 @@
  *   Mega II is the IIgs chip providing the Apple II memory and expansion bus.
  *   Host ticks count the IIgs 14.31818 MHz clock, about 70 ns per tick.
  *   A slow Apple bus cycle normally takes fourteen ticks. PHI is the Z180
- *   processor clock; one
- *   T-state is one PHI period and a half-PHI is one rising or falling edge step.
+ *   processor clock. A T-state is one PHI period; a half-PHI is the interval
+ *   between successive rising and falling edges. PH0 is the Apple bus clock.
+ *   ACK acknowledges a captured host event. RUN permits another event;
+ *   STALL holds the Apple access until the acknowledgement has settled.
  *   BUSREQ asks the Z180 to give up its bus; BUSACK says it has done so. DMA
  *   (direct memory access) copies bytes without executing a CPU instruction.
  *   DREQ is a request input to one of the Z180's two DMA channels.
  *
- *   IRQ is an interrupt request. RTS is the
- *   serial request-to-send output, wired here to select read-only memory (ROM).
+ *   IRQ is an interrupt request. Card-to-IIgs IRQ delivery can be late:
+ *   the worker records edges, but the host collects and applies them only
+ *   at synchronization or presentation points. The host CPU is not rewound
+ *   to an edge's timestamp. Relaxed synchronization therefore preserves edge
+ *   order without promising cycle-exact interrupt delivery.
+ *   RTS is the serial request-to-send output, wired here to select ROM
+ *   (read-only memory).
  *   EPROM is the erasable read-only chip containing the firmware. EEPROM
  *   is electrically erasable memory holding the video configuration.
  *
  *   The application owns SSCard. The worker alone runs chip state while a job
- *   is outstanding. Host reads, reset and presentation first synchronize().
+ *   is outstanding. Host reads and reset first synchronize(); presentation may
+ *   instead claim stopped Oak state without an exact host-frame fence.
  *   Sources: Second Sight manual, card operation; Jawaid
  *   Bazyar's ROM_BEEF.asm (Reset, ClearScreen and host-command routines), at
  *   https://github.com/jawaidbazyar2/secondsight . Zilog UM005004-0918 pp. 16-30
@@ -39,52 +47,130 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <stdexcept>
-#include <cstdio>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <array>
+#include <atomic>
+#include <utility>
+#ifdef __EMSCRIPTEN__
+#include <emscripten/threading.h>
+#endif
 
-// The worker owns card state while processing a batch. The main thread
-// drains preceding batches before reading that state, presenting video or
-// applying Apple IRQ transitions. SDL and IIgs state stay on the main thread.
+// The origin is a scanline boundary on the IIgs 14.31818 MHz clock. Each
+// line has 65 slow-bus periods: 64 of 14 ticks and a final 16-tick period,
+// totaling 912 ticks (Apple IIgs Hardware Reference, pp. 13–15, Fig. 2-2).
+// Falls begin at offsets 0, 14, ... 896; the next line begins at 912.
+// Round an access to the first fall at or after its requested tick. The
+// model's corresponding PH0 high is seven ticks before that falling edge.
+static uint64_t next_slot_fall(uint64_t fall) {
+    return fall + (fall % 912 == 896 ? 16 : 14);
+}
+
+// Round an absolute host tick forward without skipping an aligned fall.
+static uint64_t slot_fall_at_or_after(uint64_t ticks) {
+    const uint64_t line = ticks - ticks % 912;
+    const uint64_t position = ticks % 912;
+    return line + (position > 896 ? 912 : ((position + 13) / 14) * 14);
+}
+
+// A transfer's first observable phase precedes its falling-edge sample.
+static uint64_t slot_high(uint64_t fall) { return fall >= 7 ? fall - 7 : 0; }
+
+// The worker owns card state while consuming the transfer stream. The host
+// drains preceding entries for inspection or claims stopped Oak for drawing.
+// IRQ collection uses its own lock and can occur while the worker continues.
+// SDL windows and the IIgs CPU stay on the host thread.
 struct SSCard::Worker {
-    // One host submission: replay these Apple transfers in order, then run
-    // through ticks. access, when present, is a final synchronous read/write.
-    // Its pointers refer to dispatch()'s caller and stack, so dispatch must
-    // wait for this sequence before returning. The deque owns queued jobs;
-    // the worker moves one out and owns it until completed is published.
-    struct Job {
-        std::vector<megaii_transfer_t> transfers;
-        uint64_t ticks;
+    // One posted Apple access or host time, in emulated-time order. A plain
+    // transfer needs no answer. Otherwise the card runs through ticks and,
+    // with access, applies that access too; its caller waits for completion,
+    // so access and held stay valid until then.
+    struct Entry {
+        megaii_transfer_t transfer;
         megaii_transfer_t *access;
         uint64_t *held;
-        uint64_t sequence;
+        uint64_t ticks;
+        bool plain;
+        // A write whose only possible answer is its RDY hold: the result goes
+        // to held_ticks, then held_sequence, since the host may not wait for it.
+        bool conditional;
     };
-    // The mutex protects queue ownership and submitted/completed counters.
-    // Publishing completed under the lock makes all chip writes visible to
-    // synchronize(). Only the worker writes error and irq during a job.
+    // Transfers present pins at PH0 high; stop-only entries name their stop tick.
+    static uint64_t input_time(Entry const &entry) {
+        return entry.plain || entry.access || entry.conditional ? slot_high(entry.transfer.ticks) : entry.ticks;
+    }
+    // A bounded single-producer, single-consumer ring: the host thread alone
+    // writes entries and posted, the card thread alone advances consumed and
+    // completed. Release/acquire on the counters hands over the entries, the
+    // results and all card state written before completed.
+    static constexpr size_t RING_SIZE = 4096;
+    std::array<Entry, RING_SIZE> ring;
+    alignas(64) std::atomic<uint64_t> posted{0};
+    alignas(64) std::atomic<uint64_t> consumed{0};
+    alignas(64) std::atomic<uint64_t> completed{0};
+    // The host's current Mega II time: every access before it is posted, so
+    // the card may run through it.
+    alignas(64) std::atomic<uint64_t> host_time{0};
+    alignas(64) std::atomic<uint64_t> held_sequence{0};
+    std::atomic<uint64_t> held_ticks{0};
+    std::atomic<uint64_t> horizon{0};
+    // Worker-only next-entry index and latest host time whose inputs are known.
+    uint64_t next = 0, known = 0;
+    // Short bus and frontier waits stay awake for this many empty checks.
+    // Full-state fences sleep immediately while the host owns the card.
+    static constexpr unsigned IDLE_CHECKS = 1U << 18;
+    // 64 Mega II cycles of 14 host ticks: about 63 microseconds.
+    static constexpr uint64_t TIME_STEP = 64 * 14;
+    static constexpr uint64_t EVENT_STEP = 14;
+    alignas(64) std::atomic<bool> sleeping{false};
+    std::atomic<bool> stop{false};
+    // A reset requests cancellation at the current exact fence. detached
+    // means no ISA handler remains live on the worker stack.
+    std::atomic<bool> mutation{false}, detached{true};
+    // Only the renderer requests/owns this handoff; the worker publishes Ready
+    // after finishing chip work at its current scheduler edge. No pixel copy.
+    enum PresentationState { Idle, Requested, Ready, Owned };
+    std::atomic<PresentationState> presentation{Idle};
+    uint64_t presentation_ticks = 0;
     std::mutex mutex;
-    std::condition_variable ready, finished;
-    std::deque<Job> jobs;
-    std::vector<bool> irq;
+    std::condition_variable wake;
+    // Apple IRQ edges carry card timestamps and stay in card order. The host
+    // collects them at synchronization or presentation; until then an edge
+    // may be delivered later than it occurred in emulated time.
+    std::mutex irq_mutex;
+    std::vector<std::pair<Z180Time, bool>> irq;
     std::thread thread;
     const std::thread::id host_thread = std::this_thread::get_id();
     std::exception_ptr error;
-    uint64_t submitted = 0, completed = 0;
-    bool stop = false;
 };
+
+// Spin-wait hint for a short cross-thread wait; it reads no clock.
+static inline void cpu_relax() {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__)
+    asm volatile("yield");
+#endif
+}
 
 // Connect the processor pins to the board decode and VGA chip. The serial RTS
 // output selects the ROM overlay, so its callback must update direct-read pages.
-SSCard::SSCard(const uint8_t *image, uint64_t rate, SSCapture::LatticeMap lattice_map) : capture(lattice_map), ticks_per_second(rate) {
+SSCard::SSCard(const uint8_t *image, uint64_t rate, SSCapture::LatticeMap lattice_map, Presentation presentation)
+    : capture(lattice_map), host_lattice_map(lattice_map), presentation_mode(presentation), ticks_per_second(rate) {
     // image supplies exactly ROM_SIZE bytes; rate is host ticks per second.
     // Keep a truncated integer tick period, matching Z180Time::from_ticks.
     // Zero rate is handled as an unreachable deadline by transfer_deadline().
     if (uint32_t(rate))
         transfer_period = Z180Time::units_per_second / uint32_t(rate);
     std::memcpy(rom.data(), image, rom.size());
+    // SD7:0 is this bus; SD15:8 is open. Oak's scan-test convention borrows
+    // the byte already retained by every CPU access, including direct reads.
+    // Second Sight reference, docs/reference/oti087-registers.md, ext $03.
+    vga.bind_system_data(bus_data);
     transfers.reserve(QUEUE_SIZE);
     // The CPU has no knowledge of Apple addresses or video chips. These
     // callbacks translate its physical memory and I/O cycles into card actions.
@@ -101,24 +187,6 @@ SSCard::SSCard(const uint8_t *image, uint64_t rate, SSCapture::LatticeMap lattic
         rom_overlay = level;
         update_direct_reads();
     };
-    cpu->set_asci_idle_clock_gating(true);
-    cpu->set_idle_skipping(true);
-    // Idle-loop skipping may inspect only stable ROM/SRAM. Return -1 for
-    // addresses with device effects, so the CPU executes those reads normally.
-    cpu->set_idle_memory([this](uint32_t address, bool drive) -> int {
-        if (address == 0x100030)
-            return bus_data; // DMA status (DSTAT) is internal; it leaves the card data bus unchanged.
-        address = cpu->a18_tout_address(address);
-        if (address >= 0x40000 && (address < 0x60000 || address >= 0x80000))
-            return -1;
-        uint8_t data = ((address < 0x20000 && rom_overlay) || address >= 0x60000) ? rom[address & 0x1ffff]
-                                                                                  : sram[address & 0x1ffff];
-        if (drive) {
-            bus_data = data;
-            bus_valid = true;
-        }
-        return data;
-    });
     cpu->set_bus_wait([this](uint32_t a, bool write, bool io) {
         return io ? 0U : extra_wait(write ? Z180::Access::MemoryWrite : Z180::Access::MemoryRead, a);
     });
@@ -133,9 +201,12 @@ SSCard::SSCard(const uint8_t *image, uint64_t rate, SSCapture::LatticeMap lattic
             // BCLK, the U4 Z180 I/O decoder latch clock, rises at the final
             // write-data edge. This also applies
             // when relocated internal I/O owns the CPU's data transfer.
-            if (!asserted && write)
+            // Apple reads from the select edge on wait for that edge.
+            if (!asserted && write) {
                 host_output = data;
+            }
             ack_selected = asserted;
+            phase(phase_high, card_time());
             if (!asserted)
                 cpu->request_yield();
         }
@@ -146,16 +217,23 @@ SSCard::SSCard(const uint8_t *image, uint64_t rate, SSCapture::LatticeMap lattic
         else
             strobe(reg, write ? data : bus_data);
     });
-    // Do not release a copy grant before the CPU has actually surrendered
-    // the bus. Leave at least ACK_WRITE_PHI for the SRAM write after BUSACK.
+    // The U17 copy controller writes only after the CPU has surrendered the
+    // bus. The CPU then releases BUSREQ at the end of /WR without a scheduler
+    // return if it can.
     cpu->set_busack([this](bool asserted) {
-        if (!asserted || !bus_request)
+        if (!asserted)
             return;
-        catch_until = std::max(catch_until, card_time() + cpu->phi_time(ACK_WRITE_PHI));
-        if (!schedule_copy_release())
+        Z180Time const now = card_time();
+        advance_copy(now);
+        copy_grant(now, now);
+        if (!schedule_copy_release(now))
             cpu->request_yield();
     });
-    cpu->set_bus_release_complete([this] { complete_copy(); });
+    cpu->set_board_edge([this] {
+        copy_in_cpu_edge = true;
+        advance_copy(copy_cpu_edge);
+        copy_in_cpu_edge = false;
+    });
     vga.cint_callback = [this](bool asserted) { cpu->set_input(Z180::Input::INT0, asserted); };
     reset(0, true);
 }
@@ -163,101 +241,479 @@ SSCard::SSCard(const uint8_t *image, uint64_t rate, SSCapture::LatticeMap lattic
 // Join the worker before its bus callbacks or card storage can be destroyed.
 SSCard::~SSCard() {
     if (worker) {
+        worker->stop.store(true, std::memory_order_seq_cst);
         {
             std::lock_guard<std::mutex> lock(worker->mutex);
-            worker->stop = true;
+            worker->wake.notify_one();
         }
-        worker->ready.notify_one();
         if (worker->thread.joinable())
             worker->thread.join();
     }
 }
 
-// Start the optional card execution thread once. It consumes jobs submitted
-// by dispatch(); no parameters or result are needed. Browser builds execute
-// the same work on the main thread because waiting there would spin.
+// Start the card execution thread once. It runs entries posted by
+// observe(), dispatch() and catch_up(). The browser's prestarted pthread pool
+// owns the same worker and uses the same bus meeting points.
 void SSCard::start_worker() {
-#ifdef __EMSCRIPTEN__
-    // Browser-main-thread condition waits spin. The same batch scheduler can
-    // execute locally with the same event deadlines and synchronous host reads.
-    return;
-#endif
     if (worker)
         return;
     worker = std::make_unique<Worker>();
+    consumer_limit = Worker::RING_SIZE;
     host_pending = capture.pending;
     host_irq = apple_irq;
     worker->thread = std::thread([this] {
-        // Sleep until a job or shutdown arrives. During shutdown, finish
-        // queued jobs in order; exit only when the queue has become empty.
-        for (;;) {
-            Worker::Job job;
-            {
-                std::unique_lock<std::mutex> lock(worker->mutex);
-                worker->ready.wait(lock, [this] { return worker->stop || !worker->jobs.empty(); });
-                if (worker->jobs.empty())
-                    return;
-                // Take ownership under the lock, then release it before
-                // running the CPU. The main thread can enqueue the next job.
-                job = std::move(worker->jobs.front());
-                worker->jobs.pop_front();
+#ifdef __EMSCRIPTEN__
+        // Give browser performance traces the same identifiable device owner.
+        emscripten_set_thread_name(pthread_self(), "Second Sight");
+#endif
+        try {
+            stream_entries();
+        } catch (...) {
+            Worker &w = *worker;
+            w.error = std::current_exception();
+            // Hand failed requests back so their callers rethrow the retained
+            // error. Invariant failures must not strand a host result wait.
+            while (!w.stop.load(std::memory_order_acquire)) {
+                const uint64_t posted = w.posted.load(std::memory_order_acquire);
+                w.consumed.store(posted, std::memory_order_release);
+                w.completed.store(posted, std::memory_order_release);
+                w.held_ticks.store(NO_TICKS, std::memory_order_relaxed);
+                w.held_sequence.store(posted, std::memory_order_release);
+                w.mutation.store(false, std::memory_order_release);
+                cpu_relax();
             }
-            if (!worker->error) {
-                try {
-                    // Replay earlier Apple accesses, then advance the card to
-                    // the job's host time. process() handles the final access
-                    // whose read byte or RDY wait the main thread needs back.
-                    run_transfers(job.transfers, job.ticks);
-                    if (job.access)
-                        *job.held = process(*job.access);
-                } catch (...) {
-                    // An exception escaping std::thread would terminate the
-                    // application. Keep the first failure for synchronize()
-                    // to rethrow on the host; later jobs only retire their
-                    // sequence numbers so a waiting host cannot deadlock.
-                    worker->error = std::current_exception();
-                }
-            }
-            {
-                std::lock_guard<std::mutex> lock(worker->mutex);
-                // Publish the result before waking the host. Its predicate
-                // waits for all submitted jobs, not merely one notification.
-                worker->completed = job.sequence;
-            }
-            worker->finished.notify_one();
         }
     });
 }
 
-// Drain all submitted transfers before exposing card state to the host.
-// Publish Apple IRQ edges here because the worker cannot modify the IIgs CPU.
-void SSCard::synchronize() {
-    if (!work_pending)
-        return;
-    {
-        std::unique_lock<std::mutex> lock(worker->mutex);
-        worker->finished.wait(lock, [this] { return worker->completed == worker->submitted; });
+// Run the Z180 on one worker stack. A bus meeting updates the board and
+// returns another grant, rather than unwinding an unfinished instruction.
+void SSCard::stream_entries() {
+    Worker &w = *worker;
+    Worker::Entry entry{};
+    bool active = false, started = false, high = false, held = false;
+    bool stopping = false, returning = false;
+    uint64_t fall = 0, first = 0;
+
+    // Rendering may take the current scan at a scheduler edge, including an
+    // idle edge. Release/acquire transfers Oak ownership; the host never waits
+    // here. Cancellation leaves all queued bus inputs in their original order.
+    auto present = [&]() {
+        if (w.presentation.load(std::memory_order_acquire) != Worker::Requested) return;
+        vga.advance(std::max(cpu_time(), vga.next_event() <= cpu_time() ? vga.next_event() : 0.0));
+        w.presentation_ticks = card_time().floor_ticks(ticks_per_second);
+        auto expected = Worker::Requested;
+        if (!w.presentation.compare_exchange_strong(expected, Worker::Ready,
+                std::memory_order_release, std::memory_order_relaxed)) return;
+        w.sleeping.store(true, std::memory_order_seq_cst);
+        std::unique_lock<std::mutex> lock(w.mutex);
+        w.wake.wait(lock, [&] {
+            const auto state = w.presentation.load(std::memory_order_acquire);
+            // A new request may replace Idle before the worker wakes. It no
+            // longer owns this handoff and must return to process that request.
+            return (state != Worker::Ready && state != Worker::Owned) ||
+                   w.stop.load(std::memory_order_acquire) || w.mutation.load(std::memory_order_acquire);
+        });
+        w.sleeping.store(false, std::memory_order_relaxed);
+    };
+
+    // Once completed is published, the host may inspect the card. Keep
+    // every chip read on this side of that ownership hand-off.
+    auto park = [&](bool mutation_complete = false, bool idle_fence = false) {
+        const uint64_t time = w.host_time.load(std::memory_order_acquire);
+        // Time publication alone supplies no new bus input. Accumulate a
+        // useful grant while caught up; a posted transfer still wakes at once.
+        // Follow a pending event every slot cycle so ACK stays close to the host.
+        const uint64_t resume_time = time + (capture.pending ? Worker::EVENT_STEP : Worker::TIME_STEP);
+#ifdef GS2_SS_TESTING
+        const bool executing = cpu->park();
+#endif
+
+        w.completed.store(w.next, std::memory_order_release);
+        if (mutation_complete) w.mutation.store(false, std::memory_order_release);
+        unsigned idle = 0;
+        while (w.posted.load(std::memory_order_acquire) == w.next &&
+               w.host_time.load(std::memory_order_acquire) < resume_time &&
+               !w.mutation.load(std::memory_order_acquire) &&
+               !w.stop.load(std::memory_order_acquire)) {
+            present();
+            if (!idle_fence && ++idle < Worker::IDLE_CHECKS) {
+                cpu_relax();
+                continue;
+            }
+            w.sleeping.store(true, std::memory_order_seq_cst);
+            std::unique_lock<std::mutex> lock(w.mutex);
+            w.wake.wait(lock, [&] {
+                return w.posted.load(std::memory_order_acquire) != w.next ||
+                       w.host_time.load(std::memory_order_acquire) >= resume_time ||
+                       w.mutation.load(std::memory_order_acquire) ||
+                       w.presentation.load(std::memory_order_acquire) == Worker::Requested ||
+                       w.stop.load(std::memory_order_acquire);
+            });
+            w.sleeping.store(false, std::memory_order_relaxed);
+            idle = 0;
+        }
+#ifdef GS2_SS_TESTING
+        cpu->unpark(executing);
+#endif
+    };
+    auto scheduler = [&]() -> uint64_t {
+        for (;;) {
+            const auto now = card_time();
+            service_card_deadlines(now);
+
+            if (w.stop.load(std::memory_order_acquire)) {
+                stopping = returning = true;
+                cpu->stop_after_instruction();
+            }
+            if (w.mutation.load(std::memory_order_acquire)) {
+                cpu->cancel_for_reset();
+                return cpu->half_cycles();
+            }
+            if (returning) {
+                auto end = std::min({now + cpu->phi_time(16), vga_deadline(vga.next_event()), copy_wake()});
+                return cpu->half_cycles() + std::max<uint64_t>(1, (end - now).ceil_ticks(cpu_hz * 2));
+            }
+
+            present();
+
+            // Acquire time before entries: publication of time follows every
+            // earlier host input. Inputs are never ordered by arrival time.
+            w.known = std::max(w.known, w.host_time.load(std::memory_order_acquire));
+            const uint64_t posted = w.posted.load(std::memory_order_acquire);
+
+            if (!active && w.next != posted) {
+                entry = w.ring[w.next % Worker::RING_SIZE];
+                const uint64_t input = Worker::input_time(entry);
+                w.known = std::max(w.known, input);
+                if (input_passed(input))
+                    throw std::runtime_error("Second Sight: streamed transfer high already passed");
+
+                // The copied entry no longer needs its ring slot. Return
+                // slots in groups too, or immediately for a waiting caller.
+                if ((w.next + 1) % PUBLISH_ENTRIES == 0 || !entry.plain)
+                    w.consumed.store(w.next + 1, std::memory_order_release);
+                active = true;
+                started = high = held = false;
+                fall = first = entry.transfer.ticks;
+            }
+            // An active entry supplies its full bus cycle, including the
+            // repeated falls of a hold. The ordinary grant also rounds to
+            // the first half-PHI at its deadline; that is not run-ahead.
+            if (active && (entry.plain || entry.access || entry.conditional)) {
+                const auto rise = transfer_deadline(slot_high(fall));
+                const auto sample = transfer_deadline(fall);
+                if (!high && now >= rise) {
+                    transfer_rise(entry.transfer, now, rise, started, high);
+                }
+                if (high && now >= sample) {
+                    if (transfer_fall(entry.transfer, sample, fall, held)) {
+                        const uint64_t extra = fall - first;
+                        stall_ticks += extra;
+                        if (held) progress(fall);
+                        if (entry.plain && extra)
+                            throw std::runtime_error("Second Sight: queued RDY access escaped arbitration");
+                        if (entry.access) {
+                            *entry.access = entry.transfer;
+                            *entry.held = extra;
+                        }
+                        ++w.next;
+
+                        active = false;
+                        if (entry.conditional) {
+                            w.held_ticks.store(extra, std::memory_order_relaxed);
+                            w.held_sequence.store(w.next, std::memory_order_release);
+                        } else if (!entry.plain) {
+                            vga.advance(std::max(cpu_time(), vga.next_event() <= cpu_time() ? vga.next_event() : 0.0));
+                            park();
+                        }
+                        continue;
+                    }
+                    if (!held) { held = true; ++stalls; }
+                    progress(fall);
+                    fall = next_slot_fall(fall);
+                    high = false;
+                }
+            } else if (active && now >= transfer_deadline(entry.ticks)) {
+                ++w.next;
+                active = false;
+                vga.advance(std::max(cpu_time(), vga.next_event() <= cpu_time() ? vga.next_event() : 0.0));
+                // A full-state fence hands the card to presentation, reset or
+                // inspection. Sleep until the host resumes it; bus results
+                // keep the short-wait policy above.
+                park(false, true);
+                continue;
+            }
+
+            auto end = transfer_deadline(w.known);
+
+            if (active) {
+                // RDY retains this same transfer; its later PH0 edges are
+                // known even while the host is held (Apple TN68 Fig.2).
+                end = entry.plain || entry.access || entry.conditional
+                    ? transfer_deadline(high ? fall : slot_high(fall))
+                    : transfer_deadline(entry.ticks);
+            }
+            if (end <= now) {
+                park();
+                continue;
+            }
+            end = limit_card_deadline(end);
+            return cpu->half_cycles() + (end - now).ceil_ticks(cpu_hz * 2);
+        }
+    };
+
+    for (;;) {
+        w.detached.store(false, std::memory_order_relaxed);
+        cpu->set_scheduler(scheduler);
+        cpu->run_half_until(UINT64_MAX);
+        cpu->set_scheduler({});
+        if (!cpu->at_instruction_boundary())
+            throw std::runtime_error("Second Sight: streaming returned inside an instruction");
+        if (w.mutation.load(std::memory_order_acquire)) {
+            // No time or bus edge was issued by the cancelled tail. The host
+            // now resets the CPU at the same exact fence, with no snapshot.
+            returning = false;
+            w.detached.store(true, std::memory_order_release);
+            park(true);
+        }
+        if (stopping) return;
+
     }
-    work_pending = false;
-    // The completed/submitted wait above is also the memory hand-off for
-    // error, capture and IRQ (interrupt request) changes made by the worker.
+}
+
+// The host owns an exact parked fence. Cancel the old handler without bus
+// or time effects before applying reset; normal execution takes no snapshot.
+void SSCard::prepare_reset() {
+    synchronize();
+    if (!worker || worker->detached.load(std::memory_order_acquire)) return;
+    worker->mutation.store(true, std::memory_order_release);
+    wake_card();
+    while (worker->mutation.load(std::memory_order_acquire)) cpu_relax();
+}
+
+// Host thread: every Mega II access before ticks has been posted.
+void SSCard::publish_time(uint64_t ticks) {
+    // Virtual block devices issue a whole block without advancing the Apple
+    // clock. Its serialized bus writes precede this publication on the card.
+    ticks = std::max(ticks, posted_through);
+    if (!worker || ticks <= published_time)
+        return;
+    published_time = ticks;
+    // A possible event needs frequent time grants until its ACK is resolved.
+    // Otherwise publish in 64-cycle groups to avoid sharing the atomic
+    // host-time counter on every Mega II cycle.
+    if (pending_time_grant && event_clear(ticks)) pending_time_grant = false;
+    if (!pending_time_grant && ticks - shared_time < Worker::TIME_STEP) return;
+    publish_entries();
+    worker->host_time.store(ticks, std::memory_order_release);
+    shared_time = ticks;
+    wake_card();
+}
+
+// Publish every initialized slot before a time frontier or required result.
+// The worker still applies each input at its original high and falling edge.
+void SSCard::publish_entries() {
+    if (announced == submitted) return;
+    worker->posted.store(submitted, std::memory_order_seq_cst);
+    announced = submitted;
+}
+
+// Wake after publishing work. The wait uses this mutex too, so notification
+// cannot pass between the worker checking for work and going to sleep.
+void SSCard::wake_card() {
+    Worker &w = *worker;
+    if (w.sleeping.load(std::memory_order_seq_cst)) {
+        std::lock_guard<std::mutex> lock(w.mutex);
+        w.wake.notify_one();
+    }
+}
+
+// Host thread: no Lattice event can be pending until the host posts another
+// possible event. The card sets pending only for a host event, so a clear flag
+// after the last posted possible event stays clear.
+bool SSCard::event_clear(uint64_t ticks) const {
+    const uint64_t state = event_line.state.load(std::memory_order_acquire);
+    return !(state & 1) && (state >> 1) >= event_ticks &&
+           event_line.ack_ticks.load(std::memory_order_relaxed) <= slot_high(ticks);
+}
+
+// A zero-hold certificate needs ACK released and RUN recovered before the
+// request's PH0 high. Pending alone is not the RDY pin (BE8C LDF 424-445).
+void SSCard::publish_event_state(uint64_t accepted_ticks) {
+    event_accepted_tick = accepted_ticks;
+    event_line.ack_ticks.store(event_ready_tick, std::memory_order_relaxed);
+    const uint64_t value = accepted_ticks << 1 | uint64_t(!event_ready);
+    if (event_line.state.load(std::memory_order_relaxed) != value)
+        event_line.state.store(value, std::memory_order_release);
+}
+
+// Drain all submitted transfers before exposing card state to the host.
+// Collect Apple IRQ edges into host storage. The caller delivers them at
+// its chosen host sample; this function does not call the IIgs IRQ handler.
+void SSCard::synchronize() {
+    end_presentation();
+    if (!worker || (synchronized == submitted && synchronized_time == published_time))
+        return;
+    // A timed entry stops the card exactly at its time, also when the
+    // remainder is shorter than its time step. The card then waits, since
+    // the host publishes nothing more.
+    if (!stopping_post || posted_through < published_time)
+        post(megaii_transfer_t{}, nullptr, nullptr, std::max(posted_through, published_time), false);
+    wait_for(submitted);
+    finish_synchronize();
+}
+
+// After the completion wait, surface worker failures and take the stopped
+// capture state and queued IRQ edges. This runs on the host thread.
+void SSCard::finish_synchronize() {
+    synchronized = submitted;
+    synchronized_time = published_time;
+    // The completed counter is also the memory hand-off for error, capture
+    // and IRQ (interrupt request) changes made by the worker.
     if (worker->error)
         std::rethrow_exception(worker->error);
     host_pending = capture.pending;
-    host_irq = apple_irq;
-    for (bool asserted : worker->irq)
-        if (irq_handler)
-            irq_handler(asserted);
-    worker->irq.clear();
+    collect_irq();
 }
 
-// Keep IRQ edges in order while the worker owns the card; the host applies them
-// at synchronization rather than racing the IIgs interrupt controller.
+// Move published IRQ edges without taking ownership of live card state.
+// The short lock protects the vector; callbacks run later without that lock.
+void SSCard::collect_irq() {
+    if (!worker) return;
+    std::vector<std::pair<Z180Time, bool>> edges;
+    {
+        std::lock_guard<std::mutex> lock(worker->irq_mutex);
+        edges.swap(worker->irq);
+    }
+    irq_edges.insert(irq_edges.end(), edges.begin(), edges.end());
+}
+
+// Bound the next instruction-retirement grant by an absolute host tick.
+// Cancel any unused presentation request before the host resumes instructions.
+void SSCard::set_observation_limit(uint64_t ticks) {
+    end_presentation();
+    observation_limit.store(ticks, std::memory_order_release);
+}
+
+// Request a stopped scan for this host frame. Latest mode does not wait here;
+// it delivers only the IRQ edges the worker has published so far.
+void SSCard::request_presentation(uint64_t ticks, bool exact) {
+    end_presentation();
+    if (!worker || presentation_mode == Presentation::Exact || exact) {
+        catch_up(ticks, exact);
+        return;
+    }
+    publish_time(ticks);
+    publish_entries();
+    // A cancelled request may still be finishing its Oak preparation. Do not
+    // let an old completed fence certify ownership for a later inspection.
+    synchronized_time = NO_TICKS;
+    stopping_post = false;
+    collect_irq();
+    deliver_irq(ticks);
+    worker->presentation.store(Worker::Requested, std::memory_order_release);
+    wake_card();
+}
+
+// Claim the requested scan, or return false so the renderer keeps its texture.
+// Success transfers Oak ownership until end_presentation.
+bool SSCard::begin_presentation(uint64_t ticks, bool exact) {
+    if (!worker || presentation_mode == Presentation::Exact || exact) {
+        catch_up(ticks);
+        return true;
+    }
+    auto expected = Worker::Ready;
+    if (!worker->presentation.compare_exchange_strong(expected, Worker::Owned,
+            std::memory_order_acquire, std::memory_order_relaxed)) {
+        end_presentation();
+        return false;
+    }
+    // A slow card cannot leave a monitor arbitrarily far behind. This bound
+    // is a presentation policy, not a change to either emulated oscillator.
+    if (ticks > worker->presentation_ticks &&
+        ticks - worker->presentation_ticks > ticks_per_second / 60) {
+        end_presentation();
+        catch_up(ticks);
+    }
+    return true;
+}
+
+// Cancel a request or return Oak ownership. Wake the worker only if it had
+// already offered or handed over a stopped scan. Host thread only.
+void SSCard::end_presentation() {
+    if (!worker || worker->presentation.load(std::memory_order_relaxed) == Worker::Idle) return;
+    const auto previous = worker->presentation.exchange(Worker::Idle, std::memory_order_acq_rel);
+    if (previous == Worker::Ready || previous == Worker::Owned) wake_card();
+}
+
+// Post one entry to the card thread; wait only while the ring is full.
+void SSCard::post(megaii_transfer_t const &transfer, megaii_transfer_t *access, uint64_t *held, uint64_t ticks,
+                  bool plain, bool conditional) {
+    Worker &w = *worker;
+    // A frame or inspection follows every byte of a virtual-device burst,
+    // even when those bytes share one Apple tick. Keep the card fence after
+    // their assigned falls; this does not add time to the IIgs clock.
+    if (!plain && !access && !conditional)
+        ticks = std::max(ticks, posted_through);
+    // The producer owns this cached free-space limit. A consumer load is
+    // needed only after using all slots already returned, not at each access.
+    if (submitted == consumer_limit) {
+        publish_entries();
+        wake_card();
+        do {
+            consumer_limit = w.consumed.load(std::memory_order_acquire) + Worker::RING_SIZE;
+            if (submitted == consumer_limit) cpu_relax();
+        } while (submitted == consumer_limit);
+    }
+    w.ring[submitted % Worker::RING_SIZE] = {transfer, access, held, ticks, plain, conditional};
+    posted_through = std::max(posted_through, ticks);
+    stopping_post = !plain && !conditional;
+    ++submitted;
+    if (!plain || submitted - announced >= PUBLISH_ENTRIES) {
+        publish_entries();
+        wake_card();
+    }
+}
+
+// Wait until the card thread has completed entry count; no clock is read.
+void SSCard::wait_for(uint64_t count) {
+    while (worker->completed.load(std::memory_order_acquire) < count) {
+        consume_progress();
+        cpu_relax();
+    }
+    consume_progress();
+}
+
+// Keep IRQ edges in order while the worker owns the card. The host applies
+// collected edges at a later synchronization or presentation sample, so
+// interrupt delivery is not cycle-exact across the two processors.
 void SSCard::publish_irq(bool asserted) {
-    if (worker && worker->host_thread != std::this_thread::get_id())
-        worker->irq.push_back(asserted);
-    else if (irq_handler)
-        irq_handler(asserted);
+    if (worker && worker->host_thread != std::this_thread::get_id()) {
+        Worker &w = *worker;
+        const auto timestamp = card_time();
+        std::lock_guard<std::mutex> lock(w.irq_mutex);
+        w.irq.push_back({timestamp, asserted});
+    }
+    else
+        irq_edges.push_back({card_time(), asserted});
+}
+
+// Apply collected edges through this absolute host tick. Future edges stay
+// queued. Earlier edges are delivered here, not at their original CPU cycle;
+// relaxed synchronization can therefore delay card-to-IIgs interrupts.
+void SSCard::deliver_irq(uint64_t ticks) {
+    if (irq_edges.empty()) return;
+    // This runs on the host after taking the published edge list.
+    // Convert with the fixed host rate without reading live processor state.
+    const auto sample = Z180Time::from_ticks(ticks, ticks_per_second);
+    size_t count = 0;
+    while (count < irq_edges.size() && irq_edges[count].first <= sample) {
+        host_irq = irq_edges[count].second;
+        if (irq_handler) irq_handler(host_irq);
+        ++count;
+    }
+    irq_edges.erase(irq_edges.begin(), irq_edges.begin() + count);
 }
 
 // Submit captured bus transfers through the same scheduler in either mode.
@@ -268,20 +724,15 @@ uint64_t SSCard::dispatch(uint64_t ticks, bool wait, megaii_transfer_t *access) 
         // ticks is an absolute host-clock count. wait requests a full drain;
         // access must be paired with wait=true because its result pointers
         // remain valid only until this call returns. held is in host ticks.
-        Worker::Job job{{}, ticks, access, access ? &held : nullptr, 0};
-        job.transfers.swap(transfers);
-        transfers.reserve(QUEUE_SIZE);
-        {
-            std::lock_guard<std::mutex> lock(worker->mutex);
-            job.sequence = ++worker->submitted;
-            worker->jobs.push_back(std::move(job));
-        }
-        work_pending = true;
-        worker->ready.notify_one();
+        post(access ? *access : megaii_transfer_t{}, access, access ? &held : nullptr, ticks, false);
         if (wait)
             synchronize();
+        // A read may also finish after its requested fall because of RDY.
+        // Later fences must retain that accepted time, as conditional writes do.
+        if (access)
+            posted_through = std::max(posted_through, access->ticks + held);
     } else {
-        run_transfers(transfers, ticks);
+        run_transfers(transfers, access ? slot_high(access->ticks) : ticks);
         transfers.clear();
         if (access)
             held = process(*access);
@@ -292,9 +743,11 @@ uint64_t SSCard::dispatch(uint64_t ticks, bool wait, megaii_transfer_t *access) 
 // Replace the EPROM and Lattice map as a power cycle; keep the display and
 // nonvolatile EEPROM objects that the application already owns.
 void SSCard::change_hardware(uint64_t ticks, const uint8_t *image, SSCapture::LatticeMap lattice_map) {
-    synchronize();
+    catch_up(ticks);
+    prepare_reset();
     std::memcpy(rom.data(), image, rom.size());
     capture.lattice_map = lattice_map;
+    host_lattice_map = lattice_map;
     reset(ticks, true);
 }
 
@@ -304,10 +757,18 @@ void SSCard::reset(uint64_t ticks, bool power_on) {
     synchronize();
     if (!power_on)
         catch_up(ticks);
+    prepare_reset();
     transfers.clear();
     queued_event = false;
     observed_ticks = ticks;
     next_transfer_tick = ticks;
+    phase_transfer = {};
+    phase_decode = {};
+    phase_high = false;
+    ready_since = Z180Time::from_ticks(ticks, ticks_per_second);
+    event_accepted_tick = ticks;
+    event_ready_tick = ticks;
+    irq_edges.clear();
     // ticks anchors the reset to host time. A power cycle initializes RAM
     // and retained card latches; an Apple reset only restarts the processor.
     // Zero-filled SRAM is a deterministic emulator choice, not power-up data.
@@ -323,6 +784,9 @@ void SSCard::reset(uint64_t ticks, bool power_on) {
     // U7 Lattice chip and the U4 Z180 I/O decoder/U15 Z180 memory decoder outputs have no Apple reset input.
     rom_overlay = true;
     bus_request = ax_selected = ack_selected = false;
+    copy_phase = CopyPhase::idle;
+    copy_pending = false;
+    copy_deadline = Z180Time::never;
     cpu->reset();
     // The card holds DMA request 0 active. Fixed-source memory fills need
     // that request (UM0050 pp. 105-109; ROM_BEEF.asm ClearScreen).
@@ -330,12 +794,16 @@ void SSCard::reset(uint64_t ticks, bool power_on) {
     update_direct_reads();
     host_epoch = Z180Time::from_ticks(ticks, ticks_per_second) - cpu->time();
     cpu_hz = cpu->clock_hz();
+    update_periods();
     vga.reset();
     vga.output_divider_w(rgb);
     vga.advance(double(cpu_time()));
     drive_event();
     host_pending = capture.pending;
     host_irq = apple_irq;
+    event_ready = !capture.pending && !ack_selected && capture.run;
+    pending_time_grant = !event_ready;
+    publish_event_state(ticks);
     if (irq_handler)
         irq_handler(apple_irq);
 }
@@ -346,11 +814,19 @@ void SSCard::reset(uint64_t ticks, bool power_on) {
 void SSCard::clock_changed(uint32_t hz) {
     cpu_hz = hz;
     wait_seconds[0] = wait_seconds[1] = -1;
-    if (cpu)
+    if (cpu) {
+        update_periods();
         cpu->request_yield();
+    }
 }
 
-// Run only to the next host, VGA or copy-release boundary. Acknowledgement
+void SSCard::update_periods() {
+    tick_period = cpu->cycles_to_time(1);
+    phi_period = cpu->phi_time(1);
+    copy_write_period = cpu->phi_time(COPY_WRITE_PHI);
+}
+
+// Run only to the next host, VGA or copy controller edge. Acknowledgement
 // waits stop at the port strobe so the Apple can resume at the proper PH0 edge.
 void SSCard::run_to(Z180Time deadline, bool awaiting_ack) {
     // deadline is absolute emulated time. awaiting_ack allows an earlier
@@ -360,13 +836,10 @@ void SSCard::run_to(Z180Time deadline, bool awaiting_ack) {
     while (card_time() < deadline && (!awaiting_ack || capture.pending || ack_selected)) {
         double const vga_event = vga.next_event();
         Z180Time const event_deadline = vga_deadline(vga_event);
-        Z180Time end = std::min(deadline, event_deadline);
-        if (bus_request && cpu->bus_acknowledged())
-            end = std::min(end, catch_until);
+        Z180Time end = std::min({deadline, event_deadline, copy_wake()});
         if (end > card_time())
             cpu->run_half_until(cpu->half_cycles() + (end - card_time()).ceil_ticks(cpu_hz * 2));
-        if (bus_request && cpu->bus_acknowledged() && card_time() >= catch_until)
-            complete_copy();
+        advance_copy(card_time());
         // If the exact integer deadline has passed, retain the original VGA
         // double for dispatch; converting card time back must not round below it.
         vga.advance(std::max(double(cpu_time()), card_time() >= event_deadline ? vga_event : 0.0));
@@ -383,12 +856,20 @@ void SSCard::update_direct_reads() {
         cpu->set_direct_read_page(page, rom.data() + ((page & 1) << 16), bus_data, &bus_valid);
 }
 
-// Convert the copy controller deadline to a CPU half-PHI edge without rounding
-// earlier; BUSREQ releases only after the SRAM write has completed.
-bool SSCard::schedule_copy_release() {
-    auto const now = card_time();
-    return catch_until > now &&
-           cpu->schedule_bus_release(cpu->half_cycles() + (catch_until - now).ceil_ticks(cpu_hz * 2));
+// Convert the U17 copy controller's release edge to a CPU half-PHI edge
+// without rounding earlier; BUSREQ releases only after the SRAM write.
+bool SSCard::schedule_copy_release(Z180Time now) {
+    if (copy_phase != CopyPhase::write_start && copy_phase != CopyPhase::write_end)
+        return false;
+    Z180Time const release = copy_phase == CopyPhase::write_start ? copy_deadline + copy_write_period : copy_deadline;
+    return schedule_copy_edge(release, now);
+}
+
+bool SSCard::schedule_copy_edge(Z180Time at, Z180Time now) {
+    if (at <= now)
+        return false;
+    copy_cpu_edge = at;
+    return cpu->schedule_board_edge(cpu->half_cycles() + (at - now).ceil_ticks(cpu_hz * 2));
 }
 
 // Bridge the VGA raster clock to integer CPU time. Cache by the exact double
@@ -419,15 +900,77 @@ Z180Time SSCard::transfer_deadline(uint64_t ticks) {
     return transfer_epoch_time + Z180Time(0, (ticks - transfer_epoch_tick) * transfer_period);
 }
 
-// Commit the Apple data-in latch to SRAM at the end of the copy-controller
-// grant, then release the Z180 bus. See UM0050 pp. 28-30 for BUSREQ/BUSACK.
-void SSCard::complete_copy() {
-    sram[copy_address] = copy_data;
-    bus_data = copy_data;
-    bus_valid = true;
-    ++copies;
-    bus_request = false;
-    cpu->bus_release_w(false);
+// U17 copy controller edges. See UM0050 pp. 28-30 for BUSREQ/BUSACK.
+void SSCard::run_copy_edges(Z180Time now) {
+    while (copy_deadline <= now) {
+        Z180Time const edge = copy_deadline;
+        switch (copy_phase) {
+        case CopyPhase::synchronize:
+            copy_phase = CopyPhase::busack;
+            copy_deadline = Z180Time::never;
+            bus_request = true;
+            if (copy_in_cpu_edge)
+                cpu->bus_request_edge();
+            else
+                cpu->bus_release_w(true);
+            if (cpu->bus_acknowledged())
+                copy_grant(edge, card_time());
+            break;
+        case CopyPhase::write_start:
+            // /WR starts: write what U5/U6 and the U2 Apple data-in latch
+            // hold now, not what they held at CATCH (reference 07-glue-logic,
+            // "Copy timing budget"). The latch drives the card data bus.
+            copy_phase = CopyPhase::write_end;
+            copy_pending = false;
+            copy_deadline = edge + copy_write_period;
+            sram[copy_address] = capture.host_input;
+            bus_data = capture.host_input;
+            bus_valid = true;
+            ++copies;
+            break;
+        case CopyPhase::write_end:
+            copy_phase = CopyPhase::idle;
+            copy_deadline = Z180Time::never;
+            bus_request = false;
+            cpu->bus_release_w(false);
+            if (copy_pending)
+                copy_capture(edge, card_time());
+            break;
+        default:
+            throw std::runtime_error("Second Sight: U17 copy controller edge without a pending CATCH");
+        }
+    }
+}
+
+// A CATCH while the U17 copy controller is busy sets its one pending edge;
+// later edges merge (the MAME model's approximation: the GAL is undumped).
+void SSCard::copy_capture(Z180Time when, Z180Time now) {
+    copy_pending = true;
+    if (copy_phase == CopyPhase::idle) {
+        copy_phase = CopyPhase::synchronize;
+        copy_deadline = next_phi_edge(when, now);
+        // Inside board_edge the CPU continues without a scheduler call, so an
+        // edge it cannot hold needs one.
+        if (!schedule_copy_edge(copy_deadline, now) && copy_in_cpu_edge)
+            cpu->request_yield();
+    }
+}
+
+void SSCard::copy_grant(Z180Time when, Z180Time now) {
+    if (copy_phase != CopyPhase::busack)
+        return;
+    copy_phase = CopyPhase::write_start;
+    copy_deadline = next_phi_edge(when, now);
+}
+
+// Count from the CPU's own PHI phase so the edge converts back to the same
+// half-PHI deadline exactly.
+Z180Time SSCard::next_phi_edge(Z180Time when, Z180Time now) const {
+    if (cpu->phi_phase()) {
+        Z180Time const last = now - tick_period;
+        return last > when ? last : now + tick_period;
+    }
+    return now > when ? now : now + phi_period;
 }
 
 // The U7 Lattice chip pending-event output feeds both Z180 INT1 and DMA request 1;
@@ -447,6 +990,7 @@ uint32_t SSCard::oak_address(uint32_t address) const {
 // Convert Oak readiness to external WAIT duration. The memory decoder
 // wait overlaps programmed CPU waits rather than adding a second wait train.
 unsigned SSCard::extra_wait(Z180::Access access, uint32_t address) {
+    // VGA register I/O needs one wait, which the Z180's own I/O wait always gives.
     if (access != Z180::Access::MemoryRead && access != Z180::Access::MemoryWrite)
         return 0;
     address = cpu->a18_tout_address(address);
@@ -455,12 +999,17 @@ unsigned SSCard::extra_wait(Z180::Access access, uint32_t address) {
     // U15 Z180 memory decoder waits overlap DCNTL waits; UM0050 p. 30 samples WAIT at T2.
     // Return full PHI periods of external wait. Round the half-PHI count up
     // to avoid allowing a CPU access before the video chip is ready.
+    // Without the Oak's DRAM timeline, use the reference's no-contention
+    // counts at 18 MHz (05-z180, "A functional timing estimate"): reads 5,
+    // writes 5, or 3 with the write cache on. The U15 Z180 memory decoder
+    // forces its own count from its decode, so that count is a floor in PHI.
     const unsigned write = access == Z180::Access::MemoryWrite;
-    const double seconds = vga.access_wait(write);
+    const unsigned fixed = write && vga.write_cache_enabled() ? 3 : 5;
+    const double seconds = std::max(vga.access_wait(write), double(fixed) / 18'000'000);
     const uint32_t rate = cpu->clock_hz();
     if (wait_seconds[write] != seconds || wait_rate[write] != rate) {
         const auto ticks = cpu->time_to_cycles(Z180Time::from_seconds(seconds));
-        wait_phi[write] = unsigned((ticks + 1) / 2);
+        wait_phi[write] = std::max(FORCED_MEMORY_WAITS, unsigned((ticks + 1) / 2));
         wait_seconds[write] = seconds;
         wait_rate[write] = rate;
     }
@@ -501,8 +1050,9 @@ void SSCard::memory_write(uint32_t address, uint8_t data) {
     bus_valid = true;
     if ((address < 0x20000 && rom_overlay) || (address >= 0x60000 && address < 0x80000))
         return;
-    if (address < 0x40000)
+    if (address < 0x40000) {
         sram[address & 0x1ffff] = data;
+    }
     else if (address < 0x60000)
         vga_half = address & 0x10000;
     else {
@@ -521,15 +1071,26 @@ void SSCard::memory_write(uint32_t address, uint8_t data) {
 void SSCard::strobe(unsigned port, uint8_t data) {
     switch (port) {
         case 0: {
+            // Debugger/direct port accesses have no surrounding IORQ callback.
+            // Give those accesses the same select/release edges at this time.
+            const bool direct = !ack_selected;
+            if (direct) ack_selected = true;
             bool const was_pending = capture.pending;
-            capture.acknowledge();
+            phase(phase_high, card_time());
             drive_event();
             if (was_pending)
                 cpu->request_yield();
+            if (direct) {
+                ack_selected = false;
+                phase(phase_high, card_time());
+            }
             break;
         }
         case 1:
             capture.configure(data);
+            // The decoder inputs are live even during a held Apple phase.
+            phase_decode = capture.transfer(phase_transfer);
+            phase(phase_high, card_time());
             break;
         case 8:
         case 9:
@@ -543,8 +1104,10 @@ void SSCard::strobe(unsigned port, uint8_t data) {
             break;
         case 12:
         case 13:
-            apple_irq = !(port & 1);
-            publish_irq(apple_irq);
+            if (apple_irq != !(port & 1)) {
+                apple_irq = !(port & 1);
+                publish_irq(apple_irq);
+            }
             break;
     }
 }
@@ -581,8 +1144,9 @@ void SSCard::io_write(uint16_t port, uint8_t data) {
         const unsigned reg = port & 15;
         // Direct fixture/debug accesses complete here. Machine cycles load
         // U3 Apple data-out latch and release ACK through the IORQ edge callback.
-        if (reg == 0 && !ack_selected)
+        if (reg == 0 && !ack_selected) {
             host_output = data;
+        }
         if (reg >= 4 && reg <= 7)
             bus_data = ax_selected ? (data & 0xf0) | ax_nibble : capture.status(reg, data);
         else if (reg != 0 || !ack_selected)
@@ -595,157 +1159,278 @@ void SSCard::io_write(uint16_t port, uint8_t data) {
 
 // Bring the card to the host transfer time before evaluating its bus pins.
 uint64_t SSCard::process(megaii_transfer_t &transfer) {
-    const auto timestamp = Z180Time::from_ticks(transfer.ticks, ticks_per_second);
-    run_to(timestamp);
-    return accept_transfer(transfer, timestamp);
+    // With no possible hold, sample the U3 Apple data-out latch at the fall
+    // without leaving the CPU stack. The next unseen PH0 high and the caller's
+    // observation fence bound the rest of this instruction (TN68 Fig. 2).
+    const uint64_t fence = observation_limit.load(std::memory_order_acquire);
+    if (!worker && batch_execution && fence > transfer.ticks &&
+        !capture.pending && !capture.stall && !ack_selected &&
+        card_time().floor_ticks(ticks_per_second) <= slot_high(transfer.ticks)) {
+        direct_transfer.front() = transfer;
+        run_transfers(direct_transfer, transfer.ticks, slot_high(next_slot_fall(transfer.ticks)));
+        transfer = direct_transfer.front();
+        return 0;
+    }
+    return accept_transfer(transfer, transfer_deadline(transfer.ticks));
 }
 
-// Finish any selected acknowledgement, hold the Apple if an event is pending,
-// then latch this transfer. A video write starts a copy-controller BUSREQ grant.
-uint64_t SSCard::accept_transfer(megaii_transfer_t &transfer, Z180Time timestamp) {
-    // transfer carries the Apple address, data and select signals at timestamp.
-    // The result says whether to copy a byte, notify firmware or drive a read.
-    // Return the extra host ticks spent holding RDY; the memory mapper adds
-    // them before it completes the Apple access.
-    const auto result = capture.transfer(transfer);
-    // The MMU calls before advancing the host bus cycle. A0 select clears
-    // pending before its data edge samples U2 Apple data-in latch or loads U3 Apple data-out latch. Finish that selected
-    // cycle before accepting another transfer; no host wait is added here.
-    if (result.copy || result.event || result.drive)
-        while (ack_selected)
-            run_to(card_time() + cpu->phi_time(HANDSHAKE_SLICE_PHI), true);
-    uint64_t held = 0;
-    if (result.stall) {
-        ++stalls;
-        while (capture.pending || ack_selected) {
-            // Video and bus-grant deadlines still apply while the Apple is held.
-            // Stop when ACK deasserts, not at the end of this upper bound.
-            run_to(card_time() + cpu->phi_time(HANDSHAKE_SLICE_PHI), true);
-        }
-        // ACK is the firmware acknowledgement; PH0 is the Apple bus clock.
-        // Round up to a whole Apple cycle, then allow one complete low/high
-        // cycle before releasing RDY. This is the card timing model, not a
-        // Z180 timing requirement.
-        const uint64_t ack = card_time().ceil_ticks(ticks_per_second);
-        const uint64_t release = ((ack + MEGAII_CYCLE_TICKS - 1) / MEGAII_CYCLE_TICKS + 1) * MEGAII_CYCLE_TICKS;
-        held = release > transfer.ticks ? release - transfer.ticks : 0;
-        run_to(Z180Time::from_ticks(transfer.ticks + held, ticks_per_second));
-        stall_ticks += held;
+// Advance the two card-owned deadlines in the same order at every scheduler edge.
+inline void SSCard::service_card_deadlines(Z180Time now) {
+    advance_copy(now);
+    if (cpu->bus_acknowledged())
+        schedule_copy_release(now);
+    else if (copy_phase == CopyPhase::synchronize)
+        schedule_copy_edge(copy_deadline, now);
+    const double event = vga.next_event();
+    if (now >= vga_deadline(event))
+        vga.advance(std::max(cpu_time(), event));
+}
+
+// A scheduled board edge already supplies its own deadline.
+inline Z180Time SSCard::limit_card_deadline(Z180Time end) {
+    return std::min({end, vga_deadline(vga.next_event()), copy_wake()});
+}
+
+// Apply U7 Lattice chip pin changes, then pass a copy edge to the U17 copy
+// controller. CATCH does not depend on RUN (original BE8C LDF, blocks
+// A7/A2/B1), so a held phase can pair a new address with the old byte in
+// the U2 Apple data-in latch.
+void SSCard::phase(bool high, Z180Time timestamp) {
+    // U17 copy controller edges before this one act on the latches as they were.
+    advance_copy(timestamp);
+    const bool was_stalled = capture.stall;
+    phase_high = high;
+    const auto edge = capture.phase(phase_transfer, phase_decode, high, ack_selected);
+    if (was_stalled && !capture.stall) ready_since = timestamp;
+    if (edge.interrupt) drive_event();
+    const bool ready = !capture.pending && !ack_selected && capture.run;
+    if (ready && !event_ready) event_ready_tick = timestamp.ceil_ticks(ticks_per_second);
+    event_ready = ready;
+    publish_event_state(event_accepted_tick);
+    if (edge.event) ++events;
+    if (edge.copy) {
+        copy_address = (phase_decode.bank ? 0x10000 : 0) | phase_transfer.address;
+        Z180Time const now = card_time();
+        copy_capture(timestamp, now);
+        // The first PHI edge after CATCH can be the current half-PHI itself.
+        advance_copy(now);
     }
-    if (result.drive) {
+}
+
+// One physical PH0 rise, shared by streamed and direct transfers.
+inline void SSCard::transfer_rise(megaii_transfer_t &transfer, Z180Time now, Z180Time rise, bool &started, bool &high) {
+    if (!started) {
+        phase_transfer = transfer;
+        phase_decode = capture.transfer(transfer);
+        phase(false, now);
+        started = true;
+    }
+    phase(true, rise);
+    high = true;
+}
+
+// Sample U3 and retire one physical fall. A held period may repeat.
+inline bool SSCard::transfer_fall(megaii_transfer_t &transfer, Z180Time sample, uint64_t fall, bool held) {
+    const bool ready = !capture.stall &&
+        (!held || ready_since + Z180Time(0, 60'000'000'000) <= sample);
+    if (phase_decode.drive) {
         transfer.data = host_output;
         transfer.driven = true;
     }
-    capture.complete(transfer, result);
-    if (result.copy) {
-        // The controller has only one captured byte. Overlapping grants mean
-        // the scheduler would overwrite that byte, so stop instead of silently
-        // corrupting the card's copy of Apple video memory.
-        if (bus_request) {
-            std::fprintf(
-                stderr,
-                "SS grant overlap host=%llu old=%05x new=%04x now=%.18f grant=%.18f ack=%d pc=%04x half=%llu\n",
-                transfer.ticks, copy_address, transfer.address, cpu_time(), catch_until.as_seconds(),
-                cpu->bus_acknowledged(), cpu->get_state().pc, cpu->half_cycles());
-            throw std::runtime_error("Second Sight: overlapping SRAM grants");
+    phase(false, sample);
+    if (ready) {
+        event_accepted_tick = fall;
+        publish_event_state(fall);
+    }
+    return ready;
+}
+
+// Publish a held period whose card-side pin changes have all been resolved.
+// The host can advance motherboard time through this fall. IRQ edges have
+// been recorded, but this publication neither collects nor delivers them.
+void SSCard::progress(uint64_t ticks) {
+    if (worker && worker->thread.get_id() == std::this_thread::get_id()) {
+            worker->horizon.store(ticks, std::memory_order_release);
+    } else if (held_progress) {
+        held_progress(ticks);
+    }
+}
+
+bool SSCard::input_passed(uint64_t ticks) {
+    // Exact runs round to the first half-PHI at or after a pin edge. A soft
+    // retirement may pass that edge while still in the same whole host tick.
+    return card_time() >= transfer_deadline(ticks) + cpu->cycles_to_time(1);
+}
+
+// transfer.ticks identifies its first PH0 fall; timestamp is that fall in
+// card time. On RDY the
+// address, data and FPI bank remain presented for each following real period.
+// ACK, RUN/STALL release and the accepted fall are distinct. TN68 Fig.2
+// requires RDY settled 60 ns before the fall; a late release costs a period.
+uint64_t SSCard::accept_transfer(megaii_transfer_t &transfer, Z180Time timestamp) {
+    uint64_t fall = transfer.ticks;
+    const uint64_t first = fall;
+    const auto input = transfer_deadline(slot_high(fall));
+    // run_to meets a pin edge at the first half-PHI at or after it. Anything
+    // later has executed past an unseen input, not merely rounded its time.
+    if (card_time() >= input + cpu->cycles_to_time(1))
+        throw std::runtime_error("Second Sight: transfer high already passed: card " +
+            std::to_string(card_time().floor_ticks(ticks_per_second)) + " high " +
+            std::to_string(slot_high(fall)) + " address " + std::to_string(transfer.address));
+    bool started = false, high = false, accepted = false, held = false;
+    // PH0 edges are board deadlines, not processor returns. Keeping the
+    // retained transfer on the scheduler stack preserves the current ISA
+    // handler across RDY periods (TN68 Fig.2; BE8C LDF 424-445).
+    auto scheduler = [&]() -> uint64_t {
+        const auto now = card_time();
+        service_card_deadlines(now);
+        const auto rise = transfer_deadline(slot_high(fall));
+        if (!high && now >= rise) {
+            transfer_rise(transfer, now, rise, started, high);
         }
-        copy_address = (result.bank ? 0x10000 : 0) | transfer.address;
-        copy_data = capture.host_input;
-        bus_request = true;
-        catch_until = (held ? Z180Time::from_ticks(transfer.ticks + held, ticks_per_second) : timestamp) +
-                      cpu->phi_time(COPY_PHI);
-        cpu->bus_release_w(true);
+        if (high && now >= timestamp) {
+            if (transfer_fall(transfer, timestamp, fall, held)) {
+                accepted = true;
+                return cpu->half_cycles();
+            }
+            if (!held) { held = true; ++stalls; }
+            progress(fall);
+            fall = next_slot_fall(fall);
+            timestamp = transfer_deadline(fall);
+            high = false;
+        }
+        auto end = limit_card_deadline(high ? timestamp : transfer_deadline(slot_high(fall)));
+        return cpu->half_cycles() + (end > now ? (end - now).ceil_ticks(cpu_hz * 2) : 0);
+    };
+    cpu->set_scheduler(scheduler);
+    try {
+        // The scheduler ends only at the accepted fall; it never grants
+        // execution beyond the next physical bus, copy or Oak edge.
+        while (!accepted)
+            cpu->run_half_until(UINT64_MAX);
+    } catch (...) {
+        cpu->set_scheduler({});
+        throw;
     }
-    if (result.event) {
-        ++events;
-        drive_event();
+    cpu->set_scheduler({});
+    if (!accepted)
+        throw std::runtime_error("Second Sight: retained transfer ended before acceptance");
+    advance_copy(card_time());
+    const double event = vga.next_event();
+    vga.advance(std::max(cpu_time(), card_time() >= vga_deadline(event) ? event : 0.0));
+    if (held) progress(fall);
+    const uint64_t extra = fall - first;
+    stall_ticks += extra;
+    return extra;
+}
+
+// Consume only horizons whose earlier release/output edges are resolved.
+void SSCard::consume_progress() {
+    const uint64_t ticks = worker->horizon.load(std::memory_order_acquire);
+    if (ticks > delivered_horizon) {
+        delivered_horizon = ticks;
+        if (held_progress && (!host_clock_ticks || ticks > host_clock_ticks()))
+            held_progress(ticks);
     }
-    return held;
 }
 
 // Meet the host at a frame/reset/debug boundary before reading shared state.
-void SSCard::catch_up(uint64_t ticks) {
+void SSCard::catch_up(uint64_t ticks, bool wait) {
     observed_ticks = ticks;
-    dispatch(ticks, true);
+    dispatch(ticks, wait);
+    if (wait) deliver_irq(ticks);
     queued_event = false;
 }
 
-// Batch execution only between observable events: host transfers, copy
-// release and raster events. A pending handshake returns to the synchronous
-// path with the CPU machine-cycle phase intact.
-void SSCard::run_transfers(std::vector<megaii_transfer_t> &queue, uint64_t ticks) {
+// Apply queued accesses at their high/falling phases on the active CPU
+// stack. A possible hold leaves that stack before running the retained bus
+// request; ordinary transfers keep the existing in-stack scheduler.
+uint64_t SSCard::run_transfers(std::vector<megaii_transfer_t> &queue, uint64_t ticks, uint64_t hard_limit) {
     size_t next = 0;
-    if (batch_execution && !queue.empty()) {
-        const auto deadline = Z180Time::from_ticks(std::max(ticks, queue.back().ticks), ticks_per_second);
-        auto transfer_time = transfer_deadline(queue[0].ticks);
+    const uint64_t target = queue.empty() ? ticks : std::max(ticks, queue.back().ticks);
+    const auto deadline = transfer_deadline(target);
+    const uint64_t fence = observation_limit.load(std::memory_order_acquire);
+    // No grant by default. Full-state observations, including a frame end,
+    // cannot be answered from a later instruction boundary on the direct path.
+    const uint64_t granted = std::max(target, std::min(hard_limit, fence));
+    // The extra retirement allowance must end
+    // within the published input horizon. Queued inputs themselves remain
+    // scheduler deadlines, including their PH0 high before the sample fall.
+    if (worker &&
+        hard_limit > worker->known)
+        throw std::runtime_error("Second Sight: retirement grant exceeds known host time");
+    const auto hard = transfer_deadline(granted);
+    if (batch_execution) {
+        bool high = false;
         while (next < queue.size() || card_time() < deadline) {
             bool blocked = false;
             auto scheduler = [&]() -> uint64_t {
-                auto now = card_time();
-                if (bus_request && cpu->bus_acknowledged()) {
-                    if (now >= catch_until)
-                        complete_copy();
-                    // Re-evaluate at board event deadlines: integer clock epochs
-                    // can change the rounding of an absolute board deadline.
-                    else
-                        schedule_copy_release();
-                }
-                double const event = vga.next_event();
-                if (now >= vga_deadline(event))
-                    vga.advance(std::max(double(now.as_seconds()), event));
-                if (next < queue.size() && now >= transfer_time) {
-                    // RDY and an already selected A0 cycle need the ordinary
-                    // synchronous handshake. Leave the CPU's exact phase intact.
-                    if (capture.pending || ack_selected) {
-                        blocked = true;
-                        return cpu->half_cycles();
+                const auto now = card_time();
+                service_card_deadlines(now);
+                if (next < queue.size()) {
+                    auto &transfer = queue[next];
+                    const auto input = transfer_deadline(slot_high(transfer.ticks));
+                    if (!high && now >= input) {
+                        // The in-stack path obeys the same first-half-PHI
+                        // input deadline as accept_transfer below it.
+                        if (now >= input + cpu->cycles_to_time(1))
+                            throw std::runtime_error("Second Sight: queued transfer high already passed: card " +
+                                std::to_string(now.floor_ticks(ticks_per_second)) + " high " +
+                                std::to_string(slot_high(transfer.ticks)) + " address " + std::to_string(transfer.address) +
+                                " entry " + std::to_string(next) + "/" + std::to_string(queue.size()) +
+                                " target " + std::to_string(target) + " worker " + std::to_string(bool(worker)));
+                        // ACK and feedback can make this access a held one.
+                        // No PH0 edge has been applied yet, so process() can
+                        // resume it without duplicating a copy or U2 Apple data-in latch clock.
+                        if (capture.pending || capture.stall || ack_selected) {
+                            blocked = true;
+                            return cpu->half_cycles();
+                        }
+                        bool started = false;
+                        transfer_rise(transfer, now, input, started, high);
                     }
-                    if (accept_transfer(queue[next++], transfer_time))
-                        throw std::runtime_error("Second Sight: queued RDY access escaped arbitration");
-                    if (next < queue.size())
-                        transfer_time = transfer_deadline(queue[next].ticks);
+                    if (high && now >= transfer_deadline(transfer.ticks)) {
+                        if (capture.stall)
+                            throw std::runtime_error("Second Sight: queued access acquired RDY");
+                        transfer_fall(transfer, transfer_deadline(transfer.ticks), transfer.ticks, false);
+                        ++next;
+                        high = false;
+                    }
                 }
-                auto end = std::min(deadline, vga_deadline(vga.next_event()));
+                auto end = limit_card_deadline(hard);
                 if (next < queue.size())
-                    end = std::min(end, transfer_time);
-                if (bus_request && cpu->bus_acknowledged() && !cpu->bus_release_scheduled())
-                    end = std::min(end, catch_until);
+                    end = std::min(end, transfer_deadline(high ? queue[next].ticks : slot_high(queue[next].ticks)));
                 return cpu->half_cycles() + (end > now ? (end - now).ceil_ticks(cpu_hz * 2) : 0);
             };
-            // The CPU calls this scheduler at each external deadline. Its closure
-            // refers to this stack frame, so remove it on both success and error.
-            cpu->set_scheduler([&scheduler] { return scheduler(); });
+            cpu->set_scheduler(scheduler);
             try {
-                // At a final transfer boundary the scheduler must still accept
-                // that transfer, even though no further CPU edge is needed.
-                auto const now = card_time();
-                cpu->run_half_until(cpu->half_cycles() +
-                                    (deadline > now ? (deadline - now).ceil_ticks(cpu_hz * 2) : 1));
+                const auto now = card_time();
+                const uint64_t soft = cpu->half_cycles() +
+                    (deadline > now ? (deadline - now).ceil_ticks(cpu_hz * 2) : 1);
+                cpu->run_half_until(soft, std::max(soft, cpu->half_cycles() +
+                    (hard > now ? (hard - now).ceil_ticks(cpu_hz * 2) : 0)));
+                // A retirement can land exactly on a fall; settle that edge
+                // before exposing its sampled byte, without running another ISA.
+                scheduler();
             } catch (...) {
                 cpu->set_scheduler({});
                 throw;
             }
             cpu->set_scheduler({});
-            if (bus_request && cpu->bus_acknowledged() && card_time() >= catch_until)
-                complete_copy();
-            double const event = vga.next_event();
-            vga.advance(std::max(double(cpu_time()), card_time() >= vga_deadline(event) ? event : 0.0));
-            if (blocked) {
-                if (process(queue[next++]))
-                    throw std::runtime_error("Second Sight: queued RDY access escaped arbitration");
-                if (next < queue.size())
-                    transfer_time = transfer_deadline(queue[next].ticks);
-            }
+            advance_copy(card_time());
+            const double event = vga.next_event();
+            vga.advance(std::max(cpu_time(), card_time() >= vga_deadline(event) ? event : 0.0));
+            if (blocked && process(queue[next++]))
+                throw std::runtime_error("Second Sight: queued RDY access escaped arbitration");
         }
     }
-    for (; next < queue.size(); ++next) {
-        // The observer drains before a possible held access. Queued transfers
-        // must not introduce an unreported RDY hold; virtual DMA spacing stays
-        // solely in the card schedule.
+    for (; next < queue.size(); ++next)
         if (process(queue[next]))
             throw std::runtime_error("Second Sight: queued RDY access escaped arbitration");
-    }
-    run_to(Z180Time::from_ticks(ticks, ticks_per_second));
+    run_to(deadline);
+    // Published progress is only the whole-tick part. Late-input and saved
+    // input decisions above retain the exact half-PHI time instead.
+    return card_time().floor_ticks(ticks_per_second);
 }
 
 // Accept a Mega II transfer before the MMU completes it. Readback, IRQ and
@@ -756,8 +1441,8 @@ uint64_t SSCard::observe(megaii_transfer_t &host_transfer) {
     // can carry one byte per cycle: assign those bytes successive card-side
     // event times. This does not advance the IIgs clock or drop a byte.
     megaii_transfer_t transfer = host_transfer;
-    transfer.ticks = std::max(transfer.ticks, next_transfer_tick);
-    next_transfer_tick = transfer.ticks + MEGAII_CYCLE_TICKS;
+    transfer.ticks = slot_fall_at_or_after(std::max(transfer.ticks, next_transfer_tick));
+    next_transfer_tick = next_slot_fall(transfer.ticks);
     const uint16_t a = transfer.address;
     // These broad address checks decide when batching is safe. The U7
     // Lattice chip still performs the exact decode in accept_transfer().
@@ -765,26 +1450,89 @@ uint64_t SSCard::observe(megaii_transfer_t &host_transfer) {
     // must wait for the worker before the Apple is allowed to continue.
     const bool host = (a & 0xfff0) == 0xc0b0;
     const bool c0 = (a & 0xff00) == 0xc000;
-    const bool possible_event = c0 && (host || (a >= 0xc050 && a <= 0xc05f) ||
+    const bool possible_event = c0 && ((host && !(a & 8)) || (a >= 0xc050 && a <= 0xc057) || a == 0xc05e || a == 0xc05f ||
                                        (!transfer.read && ((a >= 0xc00c && a <= 0xc00f) || a == 0xc022 || a == 0xc029 ||
-                                                           a == 0xc02b || (capture.lattice_map == SSCapture::LatticeMap::V2 && a == 0xc034) ||
+                                                           a == 0xc02b || (host_lattice_map == SSCapture::LatticeMap::V2 && a == 0xc034) ||
                                                            a == 0xc07e || a == 0xc07f)));
     const bool possible_copy = !transfer.read && ((a >= 0x400 && a < 0xc00) || (a >= 0x2000 && a < 0xa000));
     // Card execution may acknowledge an event before host state catches up. Resolve
     // that at the next possible RDY access, before the Apple completes it.
-    if (host || (worker ? host_irq : apple_irq) ||
-        ((queued_event || (worker ? host_pending : capture.pending)) && (possible_copy || possible_event))) {
+    // With the card thread, read its live event state instead of the copy
+    // taken at the last meeting: a copy or event waits only while an event
+    // may still be unacknowledged at this access.
+    bool maybe_pending = (possible_copy || possible_event) &&
+                         (worker ? !event_clear(transfer.ticks) : (queued_event || capture.pending));
+    // A host-port read returns the U3 Apple data-out latch, so it needs the
+    // card at this time. A host-port write is an event: like a copy, it can
+    // be held only while an earlier event is still pending.
+    bool const answer = host && (transfer.read || !worker);
+    bool const irq = host_irq;
+
+    if (worker && maybe_pending && !answer && !irq && (possible_copy || possible_event)) {
+        // Only the earlier event decides a hold. Post this access once; the
+        // card has either taken that event before this time (no hold, so the
+        // host continues at once) or returns the hold for this access.
+        post(transfer, nullptr, nullptr, transfer.ticks, false, true);
+        uint64_t const sequence = submitted;
+        uint64_t held = 0;
+        for (;;) {
+            consume_progress();
+            if (event_clear(transfer.ticks))
+                break;
+            if (worker->held_sequence.load(std::memory_order_acquire) >= sequence) {
+                held = worker->held_ticks.load(std::memory_order_relaxed);
+                if (held == NO_TICKS)
+                    synchronize();
+                break;
+            }
+            cpu_relax();
+        }
+        // The result's release store follows the accepted fall. Take its
+        // horizon after acquiring that result, even if the earlier load
+        // saw only an intermediate held phase (TN68, Ready signal).
+        consume_progress();
+        if (possible_event) {
+            event_ticks = transfer.ticks;
+            pending_time_grant = true;
+        }
+        // A later inspection must fence at the accepted fall after RDY.
+        posted_through = std::max(posted_through, transfer.ticks + held);
+        next_transfer_tick = next_slot_fall(transfer.ticks + held);
+        observed_ticks = host_transfer.ticks + held;
+        deliver_irq(transfer.ticks + held);
+        return held;
+    }
+    if (answer || irq || (maybe_pending && (possible_copy || possible_event))) {
         const uint64_t held = dispatch(transfer.ticks, true, &transfer);
         queued_event = false;
-        next_transfer_tick += held;
+        if (possible_event) {
+            event_ticks = transfer.ticks;
+            pending_time_grant = true;
+        }
+        next_transfer_tick = next_slot_fall(transfer.ticks + held);
         observed_ticks = host_transfer.ticks + held;
         host_transfer.data = transfer.data;
         host_transfer.driven = transfer.driven;
+        deliver_irq(transfer.ticks + held);
         return held;
     }
-    if (transfers.size() == QUEUE_SIZE)
-        dispatch(transfer.ticks, false);
-    transfers.push_back(transfer);
+    if (worker) {
+        post(transfer, nullptr, nullptr, transfer.ticks, true);
+        if (possible_event) {
+            event_ticks = transfer.ticks;
+            pending_time_grant = true;
+            // Start the event promptly. In particular the following byte of
+            // a host word store may already need its acknowledgement.
+            publish_entries();
+            wake_card();
+        }
+    } else {
+        if (transfers.size() == QUEUE_SIZE)
+            // The incoming transfer is not in this queue yet. Its PH0 high
+            // is the next input, so the drain must not pass it to the fall.
+            dispatch(slot_high(transfer.ticks), false);
+        transfers.push_back(transfer);
+    }
     queued_event |= possible_event;
     observed_ticks = host_transfer.ticks;
     return 0;

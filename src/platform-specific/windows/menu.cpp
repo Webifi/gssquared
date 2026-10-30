@@ -47,6 +47,9 @@ static HMENU g_ssDisplayMenu = NULL;
 static HMENU g_ssMonitorMenu = NULL;
 static HMENU g_ssViewMenu = NULL;
 static HMENU g_monitorMenu    = NULL;
+// Monitor-adjust popups use the same monitor/action indices as shared settings.
+static HMENU g_monitorAdjustMenu = NULL;
+static HMENU g_monitorAdjust[SystemSettings::MONITOR_COUNT] = {};
 static HMENU g_hudMenu        = NULL;
 static HMENU g_scalingMenu    = NULL;
 static HMENU g_displayPopup   = NULL;
@@ -135,6 +138,26 @@ static void updatePopupState(HMENU popup)
     MenuInterface *mi = getMenuInterface();
     bool running = mi->isEmulationRunning();
 
+    // Refresh the current knob values when opening their submenu.
+    if (popup == g_monitorAdjustMenu) {
+        for (int monitor = 0; monitor < SystemSettings::MONITOR_COUNT; ++monitor)
+            setItemEnable(popup, monitor, mi->canAdjustMonitor(monitor));
+        return;
+    }
+    for (int monitor = 0; monitor < SystemSettings::MONITOR_COUNT; ++monitor) {
+        if (popup != g_monitorAdjust[monitor]) continue;
+        for (int action = 0; action < 9; ++action) {
+            std::wstring label = toWide(mi->monitorAdjustmentLabel(monitor, action));
+            MENUITEMINFOW item = {};
+            item.cbSize = sizeof(item);
+            item.fMask = MIIM_STRING;
+            item.dwTypeData = label.data();
+            SetMenuItemInfoW(popup, action, TRUE, &item);
+            setItemEnable(popup, action, mi->canAdjustMonitor(monitor));
+        }
+        return;
+    }
+
     // ── Drives ──────────────────────────────────────────────────────────────
     if (popup == g_drivesMenu) {
         rebuildDrivesMenu();
@@ -187,7 +210,7 @@ static void updatePopupState(HMENU popup)
         for (int i = 0; i < n; ++i) {
             int id = static_cast<int>(getItemId(g_monitorMenu, i));
             setItemCheck(g_monitorMenu,  i, id == current);
-            setItemEnable(g_monitorMenu, i, running);
+            setItemEnable(g_monitorMenu, i, running && mi->monitorAvailable(id));
         }
         return;
     }
@@ -401,6 +424,13 @@ static void requestAppQuit()
 static void dispatchCommand(UINT id)
 {
     MenuInterface *mi = getMenuInterface();
+
+    // Adjustment commands form a compact range, separate from display toggles.
+    if (id >= MENU_MONITOR_ADJUST && id < MENU_MONITOR_ADJUST + 9 * SystemSettings::MONITOR_COUNT) {
+        const int action = id - MENU_MONITOR_ADJUST;
+        mi->adjustMonitor(action / 9, action % 9);
+        return;
+    }
 
     switch (id) {
     // File
@@ -660,8 +690,8 @@ static void setupMenus()
     g_ssLatticeMenu = CreatePopupMenu();
     AppendMenuW(g_secondSightMenu, MF_STRING | MF_GRAYED, 0, L"Applies at power-on or Restart");
     AppendMenuW(g_ssFirmwareMenu, MF_STRING, MENU_SS_FIRMWARE_14, L"1.4-BEEF (original)");
-    AppendMenuW(g_ssFirmwareMenu, MF_STRING, MENU_SS_FIRMWARE_15, L"1.5-B5CB");
-    AppendMenuW(g_ssFirmwareMenu, MF_STRING, MENU_SS_FIRMWARE_20, L"2.0-1C46");
+    AppendMenuW(g_ssFirmwareMenu, MF_STRING, MENU_SS_FIRMWARE_15, L"1.5-CBFC");
+    AppendMenuW(g_ssFirmwareMenu, MF_STRING, MENU_SS_FIRMWARE_20, L"2.0-3277");
     AppendMenuW(g_ssLatticeMenu, MF_STRING, MENU_SS_LATTICE_ORIGINAL, L"Original (BE8C)");
     AppendMenuW(g_ssLatticeMenu, MF_STRING, MENU_SS_LATTICE_V2, L"v2.0 (BBB1)");
     AppendMenuW(g_secondSightMenu, MF_STRING | MF_POPUP, reinterpret_cast<UINT_PTR>(g_ssFirmwareMenu), L"Firmware");
@@ -689,6 +719,21 @@ static void setupMenus()
     AppendMenuW(g_monitorMenu, MF_STRING, MENU_MONITOR_MONO_WHITE, L"Monochrome - White");
     AppendMenuW(g_displayPopup, MF_STRING | MF_POPUP,
                 reinterpret_cast<UINT_PTR>(g_monitorMenu), L"Monitor");
+    // Host monitor geometry is saved independently for each monitor.
+    g_monitorAdjustMenu = CreatePopupMenu();
+    for (int monitor = 0; monitor < SystemSettings::MONITOR_COUNT; ++monitor) {
+        g_monitorAdjust[monitor] = CreatePopupMenu();
+        for (int action = 0; action < 9; ++action) {
+            const std::wstring label = toWide(getMenuInterface()->monitorAdjustmentLabel(monitor, action));
+            AppendMenuW(g_monitorAdjust[monitor], MF_STRING,
+                        MENU_MONITOR_ADJUST + monitor * 9 + action, label.c_str());
+        }
+        const std::wstring title = toWide(getMenuInterface()->monitorAdjustmentName(monitor));
+        AppendMenuW(g_monitorAdjustMenu, MF_STRING | MF_POPUP,
+                    reinterpret_cast<UINT_PTR>(g_monitorAdjust[monitor]), title.c_str());
+    }
+    AppendMenuW(g_displayPopup, MF_STRING | MF_POPUP,
+                reinterpret_cast<UINT_PTR>(g_monitorAdjustMenu), L"Monitor adjust");
     // Second Sight cable sense and visible monitor arrangement are separate
     // choices; F11 cycles the same view preference.
     g_ssDisplayMenu = CreatePopupMenu();
