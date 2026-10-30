@@ -169,8 +169,8 @@ public:
 private:
     // 36 MHz board oscillator; Z8S180 reset divides EXTAL by two.
     static constexpr uint32_t EXTAL_HZ = 36'000'000;
-    // U17 copy controller (undumped 18CV8), the MAME 9f0b5ae7df model of the
-    // reference's "Copy timing budget" (07-glue-logic): BUSREQ at the first PHI
+    // U17 copy controller (undumped 18CV8), modeled from the reference's
+    // "Copy timing budget" (07-glue-logic): BUSREQ at the first PHI
     // edge after CATCH, /WR at the first PHI edge after BUSACK, then two PHI of
     // /WR, the shortest registered pulse meeting the SRAM's 60 ns at 18 MHz.
     static constexpr unsigned COPY_WRITE_PHI = 2;
@@ -334,6 +334,9 @@ private:
     // Convert a video event in absolute seconds to integer card time, rounding
     // forward. Cache unchanged deadlines to avoid repeated floating-point conversion.
     Z180Time vga_deadline(double event);
+    // Advance Oak to card time. Dispatch an event whose integer deadline has
+    // passed even when the floating-point card time rounds below it.
+    void advance_vga();
     // Convert absolute host ticks to card time using a retained whole-second epoch.
     Z180Time transfer_deadline(uint64_t ticks);
     // True if execution passed this host input by at least one half-PHI.

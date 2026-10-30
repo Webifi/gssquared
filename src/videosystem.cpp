@@ -314,7 +314,7 @@ void video_system_t::set_window_title(const char *title) {
 }
 
 void video_system_t::render_frame(SDL_Texture *texture, SDL_FRect *srcrect, SDL_FRect *dstadj, bool respect_mode,
-        const SDL_FRect *content_inset_src, bool clip_source) {
+        const SDL_FRect *content_inset_src) {
 
     SDL_FRect adj_target;
     if (dstadj) {
@@ -350,22 +350,7 @@ void video_system_t::render_frame(SDL_Texture *texture, SDL_FRect *srcrect, SDL_
         }
     }
 
-    // An adjusted monitor window can extend beyond the stored scan. SDL clips
-    // source rectangles without adjusting the destination; preserve pixel scale
-    // here and leave the part outside the scan in the cleared background.
-    SDL_FRect visible = *srcrect;
-    if (clip_source) {
-        float width, height;
-        SDL_GetTextureSize(texture, &width, &height);
-        const SDL_FRect bounds = {0, 0, width, height};
-        if (!SDL_GetRectIntersectionFloat(srcrect, &bounds, &visible)) return;
-        const float sx = adj_target.w / srcrect->w, sy = adj_target.h / srcrect->h;
-        adj_target.x += (visible.x - srcrect->x) * sx;
-        adj_target.y += (visible.y - srcrect->y) * sy;
-        adj_target.w = visible.w * sx;
-        adj_target.h = visible.h * sy;
-    }
-    SDL_RenderTexture(renderer, texture, &visible, &adj_target);
+    SDL_RenderTexture(renderer, texture, srcrect, &adj_target);
     last_texture = texture;
     last_srcrect = *srcrect;
 }

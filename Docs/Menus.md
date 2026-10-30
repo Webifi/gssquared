@@ -127,10 +127,6 @@ Drive seek/activity sounds play in stereo (drive 1 toward the left, drive 2 towa
       * Both
   * Shadow Mask
 
-**Monitor adjust → Apple monitor** adjusts horizontal and vertical size and position. Each click changes one percent, up to twenty percent either way; the menu shows the current value. **Reset** restores the normal framing. Settings are remembered, including in the browser. These controls change the visible window on the raster, not the emulated video signal.
-
-**Monitor adjust → Second Sight VGA / Second Sight RGB** provides the same controls independently for each card monitor type. Defaults preserve the calibrated framing. Both groups are grayed out without **Second Sight (with Z180)**.
-
 **HUD → Stats** toggles the small performance/stats overlay (off by default).  
 **HUD → Drives** toggles the drive-activity strip at the bottom of the screen (on by default).  
 Both are useful when recording video and you want a clean picture. Preferences are remembered in app settings.

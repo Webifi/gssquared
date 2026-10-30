@@ -39,8 +39,6 @@ In the OSD, there are buttons to change the display engine - NTSC, RGB, and Mono
 
 These are matters of personal preference, so you get to pick the one you like best.
 
-**Display → Monitor adjust → Apple monitor** provides size and position controls like the knobs on a monitor. **Narrower / Wider** and **Shorter / Taller** change picture size; **Left / Right** and **Up / Down** move it. Each step is one percent, with a twenty-percent range in either direction. **Reset** restores the default crop. The settings are saved on native builds and in the browser. They change only the part of the raster shown and its scale; the video scanner and guest pixels are unchanged.
-
 ## CRT Effect / Shader
 
 GS2 has a "Shadow Mask" option under the Display menu, that turns on a GPU CRT shader effect.
@@ -64,8 +62,6 @@ The menu item is grayed out when no Second Sight card is present. The setting is
 ## Second Sight with Z180
 
 The real card has its own monitor, separate from the IIgs display. **Display → Second Sight → Monitor → VGA** (default) and **AppleColor RGB** select its monitor type. The ROM reads the monitor sense at each card mode change and offers different modes for each monitor. The choice takes effect at the next card mode change; **Machine → Restart** shows it at once.
-
-**Display → Monitor adjust → Second Sight VGA / Second Sight RGB** saves independent size and position knobs for the two monitor types. These use the same controls as the Apple monitor above, in either card window and in the browser. Defaults retain the calibrated VGA and RGB windows; **Reset** restores the selected monitor's defaults. The card controls are grayed out without the card. They do not change Oak registers, firmware modes or the card's source pixels.
 
 **Display → Second Sight → View → IIgs monitor**, **Second Sight monitor**, and **Both** select one or both outputs. With one selected, the main window and full screen show that monitor. With both selected, the native app uses a separate card window; the browser shows both pictures side by side. **F11** cycles these three views. Both is the default.
 

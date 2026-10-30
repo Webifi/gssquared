@@ -280,7 +280,13 @@ void SSCard::start_worker() {
                 w.held_ticks.store(NO_TICKS, std::memory_order_relaxed);
                 w.held_sequence.store(posted, std::memory_order_release);
                 w.mutation.store(false, std::memory_order_release);
-                cpu_relax();
+                w.sleeping.store(true, std::memory_order_seq_cst);
+                std::unique_lock<std::mutex> lock(w.mutex);
+                w.wake.wait(lock, [&] {
+                    return w.posted.load(std::memory_order_acquire) != posted ||
+                           w.mutation.load(std::memory_order_acquire) || w.stop.load(std::memory_order_acquire);
+                });
+                w.sleeping.store(false, std::memory_order_relaxed);
             }
         }
     });
@@ -300,7 +306,7 @@ void SSCard::stream_entries() {
     // here. Cancellation leaves all queued bus inputs in their original order.
     auto present = [&]() {
         if (w.presentation.load(std::memory_order_acquire) != Worker::Requested) return;
-        vga.advance(std::max(cpu_time(), vga.next_event() <= cpu_time() ? vga.next_event() : 0.0));
+        advance_vga();
         w.presentation_ticks = card_time().floor_ticks(ticks_per_second);
         auto expected = Worker::Requested;
         if (!w.presentation.compare_exchange_strong(expected, Worker::Ready,
@@ -424,7 +430,7 @@ void SSCard::stream_entries() {
                             w.held_ticks.store(extra, std::memory_order_relaxed);
                             w.held_sequence.store(w.next, std::memory_order_release);
                         } else if (!entry.plain) {
-                            vga.advance(std::max(cpu_time(), vga.next_event() <= cpu_time() ? vga.next_event() : 0.0));
+                            advance_vga();
                             park();
                         }
                         continue;
@@ -437,7 +443,7 @@ void SSCard::stream_entries() {
             } else if (active && now >= transfer_deadline(entry.ticks)) {
                 ++w.next;
                 active = false;
-                vga.advance(std::max(cpu_time(), vga.next_event() <= cpu_time() ? vga.next_event() : 0.0));
+                advance_vga();
                 // A full-state fence hands the card to presentation, reset or
                 // inspection. Sleep until the host resumes it; bus results
                 // keep the short-wait policy above.
@@ -884,6 +890,11 @@ Z180Time SSCard::vga_deadline(double event) {
     return event_time;
 }
 
+void SSCard::advance_vga() {
+    const double event = vga.next_event();
+    vga.advance(std::max(cpu_time(), card_time() >= vga_deadline(event) ? event : 0.0));
+}
+
 // Translate Mega II ticks to card time using the same truncated oscillator
 // period as from_ticks; batching must not change when a bus access occurs.
 Z180Time SSCard::transfer_deadline(uint64_t ticks) {
@@ -917,9 +928,10 @@ void SSCard::run_copy_edges(Z180Time now) {
                 copy_grant(edge, card_time());
             break;
         case CopyPhase::write_start:
-            // /WR starts: write what U5/U6 and the U2 Apple data-in latch
-            // hold now, not what they held at CATCH (reference 07-glue-logic,
-            // "Copy timing budget"). The latch drives the card data bus.
+            // /WR starts: write what the U5/U6 address latches and the U2
+            // Apple data-in latch hold now, not what they held at CATCH
+            // (reference 07-glue-logic, "Copy timing budget"). The latch
+            // drives the card data bus.
             copy_phase = CopyPhase::write_end;
             copy_pending = false;
             copy_deadline = edge + copy_write_period;
@@ -1229,7 +1241,7 @@ inline void SSCard::transfer_rise(megaii_transfer_t &transfer, Z180Time now, Z18
     high = true;
 }
 
-// Sample U3 and retire one physical fall. A held period may repeat.
+// Sample the U3 Apple data-out latch and retire one physical fall. A held period may repeat.
 inline bool SSCard::transfer_fall(megaii_transfer_t &transfer, Z180Time sample, uint64_t fall, bool held) {
     const bool ready = !capture.stall &&
         (!held || ready_since + Z180Time(0, 60'000'000'000) <= sample);
@@ -1316,8 +1328,7 @@ uint64_t SSCard::accept_transfer(megaii_transfer_t &transfer, Z180Time timestamp
     if (!accepted)
         throw std::runtime_error("Second Sight: retained transfer ended before acceptance");
     advance_copy(card_time());
-    const double event = vga.next_event();
-    vga.advance(std::max(cpu_time(), card_time() >= vga_deadline(event) ? event : 0.0));
+    advance_vga();
     if (held) progress(fall);
     const uint64_t extra = fall - first;
     stall_ticks += extra;
@@ -1418,8 +1429,7 @@ uint64_t SSCard::run_transfers(std::vector<megaii_transfer_t> &queue, uint64_t t
             }
             cpu->set_scheduler({});
             advance_copy(card_time());
-            const double event = vga.next_event();
-            vga.advance(std::max(cpu_time(), card_time() >= vga_deadline(event) ? event : 0.0));
+            advance_vga();
             if (blocked && process(queue[next++]))
                 throw std::runtime_error("Second Sight: queued RDY access escaped arbitration");
         }

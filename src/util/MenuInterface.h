@@ -4,8 +4,6 @@
 #include <vector>
 #include "util/StorageDevice.hpp"
 
-#include "util/SystemSettings.hpp"
-
 struct MenuDriveInfo {
     storage_key_t key;
     bool          is_mounted;
@@ -46,13 +44,6 @@ public:
 	void setMonitor(int monitor_id);
 	// CPU composite remains available when the optional GS encoder fails to load.
 	bool monitorAvailable(int monitor_id);
-	// Main-thread monitor controls. monitor is a SystemSettings::Monitor index;
-	// action pairs 0-7 decrement/increment size X/Y and position X/Y; 8 resets.
-	// Names are borrowed static text, labels include the current saved value.
-	bool canAdjustMonitor(int monitor);
-	const char *monitorAdjustmentName(int monitor);
-	std::string monitorAdjustmentLabel(int monitor, int action);
-	void adjustMonitor(int monitor, int action);
 	// Second Sight cable sense: false=VGA, true=AppleColor RGB; sampled at mode setup.
 	void setSecondSightMonitor(bool rgb);
 	// Second Sight visibility: IIgs=0, card=1, both=2; no chip reset.

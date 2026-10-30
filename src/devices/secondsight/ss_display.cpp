@@ -189,21 +189,8 @@ SDL_Texture *SecondSightDisplay::prepare_texture(SDL_Renderer *dest, Texture &te
     // The VGA presentation is an idealized multisync display sized to the
     // programmed unblanked signal, including overscan. This host policy is
     // not a claim about a particular monitor's deflection or lock range.
-    // Apply the host monitor's knobs to that calibrated window only. The Oak
-    // scan and its blanking remain unchanged, in both native and browser views.
-    const auto &knobs = SystemSettings::instance().monitor_adjustment(
-        rgb ? SystemSettings::SS_RGB_MONITOR : SystemSettings::SS_VGA_MONITOR);
-    if (knobs.steps != std::array<int, MonitorAdjustment::COUNT>{}) {
-        float x = horizontal.start, y = vertical.start;
-        float w = horizontal.count, h = vertical.count;
-        knobs.apply(x, y, w, h);
-        horizontal.start = std::lround(x);
-        horizontal.count = std::lround(w);
-        vertical.start = std::lround(y);
-        vertical.count = std::lround(h);
-    }
     // A host window longer than one scan period would repeat the raster.
-    // Show no signal until the mode or monitor adjustment supplies a window
+    // Show no signal until the mode supplies a window
     // that fits; this is a presentation limit, not a physical lock range.
     signal = horizontal.count <= horizontal.total && vertical.count <= vertical.total;
     const bool filtered = computer->video_system->get_crt_shader_enabled();

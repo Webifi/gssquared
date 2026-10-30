@@ -40,6 +40,7 @@
 #include "Z180.hpp"
 #include <algorithm>
 #include <cassert>
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <iterator>

@@ -363,20 +363,6 @@ static void build_menu_bar()
             end_menu();
         }
 
-        // Host monitor knobs share the saved settings and labels on every platform.
-        if (begin_menu("Monitor adjust")) {
-            for (int monitor = 0; monitor < SystemSettings::MONITOR_COUNT; ++monitor) {
-                if (begin_menu(mi->monitorAdjustmentName(monitor), mi->canAdjustMonitor(monitor))) {
-                    for (int action = 0; action < 9; ++action) {
-                        const std::string label = mi->monitorAdjustmentLabel(monitor, action);
-                        if (ImGui::MenuItem(label.c_str())) mi->adjustMonitor(monitor, action);
-                    }
-                    end_menu();
-                }
-            }
-            end_menu();
-        }
-
         // Second Sight display controls change cable sense and visible monitors
         // through the shared settings path; they do not write card registers.
         if (begin_menu("Second Sight", mi->hasSecondSightZ180())) {

@@ -190,16 +190,6 @@ I don't know what all these words mean exactly. But I confirmed it does seem to 
 	if (menuItem.action == @selector(monitorGSComposite:)) {
 		return getMenuInterface()->monitorAvailable(MONITOR_GS_COMPOSITE);
 	}
-	// Adjustment tags encode the monitor and its nine shared menu actions.
-	if (menuItem.action == @selector(monitorAdjustmentOptions:)) {
-		return getMenuInterface()->canAdjustMonitor((int)menuItem.tag);
-	}
-	if (menuItem.action == @selector(monitorAdjustment:)) {
-		const int monitor = (int)menuItem.tag / 9;
-		const std::string label = getMenuInterface()->monitorAdjustmentLabel(monitor, (int)menuItem.tag % 9);
-		[menuItem setTitle:[NSString stringWithUTF8String:label.c_str()]];
-		return getMenuInterface()->canAdjustMonitor(monitor);
-	}
 	// Second Sight menus follow the installed card. Checkmarks show saved
 	// preferences; hardware selections may still be waiting for Restart.
 	if (menuItem.action == @selector(secondSightOptions:))
@@ -332,11 +322,6 @@ I don't know what all these words mean exactly. But I confirmed it does seem to 
 - (void)monitorMonoGreen:(id)sender  { getMenuInterface()->setMonitor(MONITOR_MONO_GREEN); (void)sender; }
 - (void)monitorMonoAmber:(id)sender  { getMenuInterface()->setMonitor(MONITOR_MONO_AMBER); (void)sender; }
 - (void)monitorMonoWhite:(id)sender  { getMenuInterface()->setMonitor(MONITOR_MONO_WHITE); (void)sender; }
-// Parent actions let Cocoa gray out unavailable monitors before opening them.
-- (void)monitorAdjustmentOptions:(id)sender { (void)sender; }
-- (void)monitorAdjustment:(id)sender {
-	getMenuInterface()->adjustMonitor((int)[sender tag] / 9, (int)[sender tag] % 9);
-}
 // Give Second Sight submenu parents an action so Cocoa validates availability.
 - (void)secondSightOptions:(id)sender { (void)sender; }
 // Menu tags match Second Sight firmware indices saved for Restart.
@@ -913,30 +898,6 @@ static void setupMenus(void) {
 		keyEquivalent:@""] autorelease];
 	[monitorMenuItem setSubmenu:monitorMenu];
 	[displayMenu addItem:monitorMenuItem];
-	// The controls change only the host's visible window, not the emulated raster.
-	NSMenu *adjustMenu = [[[NSMenu alloc] initWithTitle:@"Monitor adjust"] autorelease];
-	NSMenuItem *adjustItem = [[[NSMenuItem alloc] initWithTitle:@"Monitor adjust"
-		action:nil keyEquivalent:@""] autorelease];
-	[adjustItem setSubmenu:adjustMenu];
-	[displayMenu addItem:adjustItem];
-	for (int monitor = 0; monitor < SystemSettings::MONITOR_COUNT; ++monitor) {
-		NSString *title = [NSString stringWithUTF8String:getMenuInterface()->monitorAdjustmentName(monitor)];
-		NSMenu *submenu = [[[NSMenu alloc] initWithTitle:title] autorelease];
-		NSMenuItem *parent = [[[NSMenuItem alloc] initWithTitle:title
-			action:@selector(monitorAdjustmentOptions:) keyEquivalent:@""] autorelease];
-		[parent setTarget:sMenuHandler];
-		[parent setTag:monitor];
-		[parent setSubmenu:submenu];
-		[adjustMenu addItem:parent];
-		for (int action = 0; action < 9; ++action) {
-			const std::string label = getMenuInterface()->monitorAdjustmentLabel(monitor, action);
-			NSMenuItem *item = [[[NSMenuItem alloc] initWithTitle:[NSString stringWithUTF8String:label.c_str()]
-				action:@selector(monitorAdjustment:) keyEquivalent:@""] autorelease];
-			[item setTarget:sMenuHandler];
-			[item setTag:monitor * 9 + action];
-			[submenu addItem:item];
-		}
-	}
 	// Second Sight monitor/view menus use the same tags as shared settings,
 	// so Cocoa validation can derive checkmarks without touching the card.
 	NSMenu *ssDisplayMenu = [[[NSMenu alloc] initWithTitle:@"Second Sight"] autorelease];

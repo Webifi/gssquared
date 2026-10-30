@@ -35,8 +35,6 @@ enum MenuEventCode {
 	MENU_SS_SCREEN_IIGS,
 	MENU_SS_SCREEN_CARD,
 	MENU_SS_SCREEN_BOTH,
-	// Nine monitor-adjust actions per monitor, shared by the native menus.
-	MENU_MONITOR_ADJUST = 330,
 
 	MENU_EDIT_COPY_SCREEN = 400,
 	MENU_EDIT_PASTE_TEXT,

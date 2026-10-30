@@ -37,7 +37,7 @@ bool PhosphorPersist::init(SDL_Renderer *r) {
         SDL_BLENDFACTOR_ZERO, SDL_BLENDFACTOR_ONE, SDL_BLENDOPERATION_ADD);
     // A renderer may accept the history texture but not these blend operations.
     // Check once at startup and leave the ordinary monochrome path available.
-    SDL_BlendMode saved_blend;
+    SDL_BlendMode saved_blend = SDL_BLENDMODE_NONE;
     SDL_GetRenderDrawBlendMode(renderer, &saved_blend);
     SDL_Texture *saved_target = SDL_GetRenderTarget(renderer);
     const bool supported = SDL_SetTextureBlendMode(history, max_blend) &&

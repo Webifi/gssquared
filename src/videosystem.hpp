@@ -169,10 +169,8 @@ public:
     void set_window_fullscreen(display_fullscreen_mode_t mode);
     display_fullscreen_mode_t get_window_fullscreen();
     void sync_window();
-    // Monitor adjustments can sample beyond the stored raster. clip_source
-    // clips that source window and its destination together to preserve scale.
     void render_frame(SDL_Texture *texture, SDL_FRect *srcrect, SDL_FRect *dstadj, bool respect_mode = true,
-        const SDL_FRect *content_inset_src = nullptr, bool clip_source = false);
+        const SDL_FRect *content_inset_src = nullptr);
     // Present a framebuffer with no baked-in bezel (Second Sight VGA, GPU, text).
     // Fills the Apple II border area and blits src into the same content hole
     // Mega II modes use (BASE_WIDTH x BASE_HEIGHT inside the 644x232 canvas).

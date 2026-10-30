@@ -17,8 +17,6 @@
 
 #pragma once
 
-#include "display/MonitorAdjustment.hpp"
-
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -39,8 +37,6 @@ enum class FileDialogKind { Config, Disk };
  */
 class SystemSettings {
 public:
-    // Each physical monitor retains independent host-only framing knobs.
-    enum Monitor { APPLE_MONITOR, SS_VGA_MONITOR, SS_RGB_MONITOR, MONITOR_COUNT };
     // Second Sight stores hardware choices in app preferences. Firmware indices
     // select EPROM images; view indices select which monitor the host presents.
     enum SecondSightFirmware { SS_FW_14, SS_FW_15, SS_FW_20, SS_FW_COUNT };
@@ -66,7 +62,6 @@ private:
     bool mono_persistence_ = true;
     /** Display scaling: false = smooth (linear), true = sharp (pixel art). */
     bool scaling_sharp_ = false;
-    std::array<MonitorAdjustment, MONITOR_COUNT> monitor_adjustments_{};
 
     /** Last .gs2 open/save selection (full file path when known). */
     std::string last_config_path_;
@@ -146,11 +141,6 @@ public:
     int ss_view() const { return ss_view_; }
     bool mono_persistence() const { return mono_persistence_; }
     bool scaling_sharp() const { return scaling_sharp_; }
-    // Valid monitor indices come from the shared menu; preferences are clamped on load.
-    const MonitorAdjustment &monitor_adjustment(Monitor monitor) const { return monitor_adjustments_[monitor]; }
-    // Main-thread menu step: size X/Y and position X/Y pairs 0-7, Reset=8.
-    // Clamp and persist changes independently for the Apple and card monitors.
-    void adjust_monitor(Monitor monitor, int action);
 
     void set_hud_stats(bool enabled);
     void set_hud_drives(bool enabled);
