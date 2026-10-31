@@ -21,7 +21,6 @@
 #include "videosystem.hpp"
 #include "util/SystemSettings.hpp"
 #include <algorithm>
-#include <cmath>
 
 // Borrowed adapters are registered only for their lifetime. Inspection never
 // owns a display or changes the machine's existing module-state pointer.
@@ -161,42 +160,20 @@ SDL_Texture *SecondSightDisplay::prepare_texture(SDL_Renderer *dest, Texture &te
     const auto &crtc = video.crtc_state();
     const int hs = crtc.horz_blank_start;
     const int hn = (crtc.horz_blank_end - hs) & 63;
-    const int vs = crtc.vert_blank_start + 1;
-    const int vn = (crtc.vert_blank_end - crtc.vert_blank_start + 1) & 255;
+    const int vs = crtc.vert_blank_start;
+    const int vn = (crtc.vert_blank_end - crtc.vert_blank_start) & 255;
     const int rows = timing.height / (crtc.vert_disp_end + 1);
     auto horizontal = SecondSightCrt::Axis::visible(timing.total_width,
         hs * timing.total_width / timing.line_characters,
         (hn ? hn : 64) * timing.total_width / timing.line_characters);
     auto vertical = SecondSightCrt::Axis::visible(timing.total_height,
         vs * rows, (vn ? vn : 256) * rows);
-    // A fixed sync-relative host sweep approximates an adjusted AppleColor
-    // monitor. Its horizontal position is a host calibration, not a measured
-    // factory deflection; the width uses the author's IIgs SHR crop.
-    const bool rgb = SystemSettings::instance().ss_rgb_monitor();
-    const int fields = timing.interlaced ? 2 : 1;
-    const double samples = double(timing.pixel_clock) / timing.pixel_divisor;
-    bool signal = true;
-    if (rgb) {
-        constexpr double shr_clock = 14318180.0 * 16.0 / 14.0;
-        constexpr double left_after_sync = 10.7937e-6;
-        const unsigned sync_character = (crtc.horz_retrace_start + crtc.horz_retrace_skew) % timing.line_characters;
-        horizontal.start = int(std::lround(double(sync_character) * timing.total_width / timing.line_characters +
-            samples * left_after_sync)) % timing.total_width;
-        horizontal.count = int(std::lround(samples * 736.0 / shr_clock));
-        vertical.start = (crtc.vert_retrace_start * rows + 19 * fields) % timing.total_height;
-        vertical.count = 240 * fields;
-    }
-    // The VGA presentation is an idealized multisync display sized to the
-    // programmed unblanked signal, including overscan. This host policy is
-    // not a claim about a particular monitor's deflection or lock range.
-    // A host window longer than one scan period would repeat the raster.
-    // Show no signal until the mode supplies a window
-    // that fits; this is a presentation limit, not a physical lock range.
-    signal = horizontal.count <= horizontal.total && vertical.count <= vertical.total;
+    // VGA and AppleColor RGB both show the whole unblanked scan, overscan
+    // included, for any signal the card sends.
     const bool filtered = computer->video_system->get_crt_shader_enabled();
     const int phase = timing.interlaced ? video.odd_field_sync_phase() : 0;
     const bool odd = timing.interlaced && video.vpos() >= timing.total_height / 2;
-    texture.crt.configure(horizontal, vertical, filtered, timing.interlaced, video.border_color().value, signal,
+    texture.crt.configure(horizontal, vertical, filtered, timing.interlaced, video.border_color().value, true,
         phase, int(timing.total_width), odd, timing.interlaced);
     const int width = texture.crt.width(), height = texture.crt.height();
     if (width < 1 || height < 1 || width > OTI087::MAX_FRAME_DIMENSION * 2 || height > OTI087::MAX_FRAME_DIMENSION * 2)

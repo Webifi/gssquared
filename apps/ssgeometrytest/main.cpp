@@ -210,13 +210,13 @@ static void check(Host &host, const char *name, int width, int height) {
     // End counters wrap at 64 characters or 256 lines (IBM VGA/XGA TRM,
     // pp. 2-57/58, 2-73). Equal masked endpoints represent a full counter span.
     const int horizontal_blank = (crtc.horz_blank_end - crtc.horz_blank_start) & 63;
-    const int vertical_blank = (crtc.vert_blank_end - crtc.vert_blank_start + 1) & 255;
+    const int vertical_blank = (crtc.vert_blank_end - crtc.vert_blank_start) & 255;
     const int rows = timing.height / (crtc.vert_disp_end + 1);
     const auto horizontal = SecondSightCrt::Axis::visible(timing.total_width,
         crtc.horz_blank_start * timing.total_width / timing.line_characters,
         (horizontal_blank ? horizontal_blank : 64) * timing.total_width / timing.line_characters);
     const auto vertical = SecondSightCrt::Axis::visible(timing.total_height,
-        (crtc.vert_blank_start + 1) * rows, (vertical_blank ? vertical_blank : 256) * rows);
+        crtc.vert_blank_start * rows, (vertical_blank ? vertical_blank : 256) * rows);
     assert(horizontal.count > 0 && vertical.count > 0);
     SecondSightCrt scan;
     scan.configure(horizontal, vertical, false, timing.interlaced, video.border_color().value);

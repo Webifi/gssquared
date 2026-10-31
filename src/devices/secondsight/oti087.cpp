@@ -129,11 +129,11 @@ uint8_t OTI087::io_read_impl(uint32_t port) {
                 // distance from blank start. This handles blank intervals
                 // that cross the end of a line or frame.
                 int const hb_len = (crtc.horz_blank_end - crtc.horz_blank_start) & 63;
-                int const vb_len = (crtc.vert_blank_end - crtc.vert_blank_start + 1) & 255;
+                int const vb_len = (crtc.vert_blank_end - crtc.vert_blank_start) & 255;
                 int const ht = crtc.horz_total + 5;
                 bool const hb = (hchar + ht - crtc.horz_blank_start % ht) % ht <
                                 (hb_len ? hb_len : 64);
-                bool const vb = (field_y + vt - (crtc.vert_blank_start + 1) % vt) % vt < (vb_len ? vb_len : 256);
+                bool const vb = (field_y + vt - crtc.vert_blank_start % vt) % vt < (vb_len ? vb_len : 256);
                 bool const de = hchar < crtc.disp_enable_skew ||
                                 hchar > crtc.horz_disp_end + crtc.disp_enable_skew || field_y > crtc.vert_disp_end;
                 return (hb || vb || de ? 1 : 0) | (vertical_retrace() ? 8 : 0);
@@ -575,14 +575,18 @@ int OTI087::vsync_r() {
 }
 
 // Test horizontal and vertical blank intervals with their hardware wraparound.
+// Vertical blank covers Start Vertical Blanking up to the line whose low
+// eight bits equal End Vertical Blanking, like horizontal blank. IBM p. 2-73
+// gives two different rules; with this one, an end on the last line keeps
+// line 0 visible.
 bool OTI087::blanked(int x, int y) const {
     int const ht = crtc.horz_total + 5, vt = crtc.vert_total + 2;
     int const hx = x * pixel_divisor() / (char_dots() * horizontal_multiplier());
     int const vy = y / ((bit(ext[0x14], 7) ? 2 : 1) * vertical_divisor());
     int const hb = (crtc.horz_blank_end - crtc.horz_blank_start) & 63;
-    int const vb = (crtc.vert_blank_end - crtc.vert_blank_start + 1) & 255;
+    int const vb = (crtc.vert_blank_end - crtc.vert_blank_start) & 255;
     return (hx + ht - crtc.horz_blank_start % ht) % ht < (hb ? hb : 64) ||
-           (vy + vt - (crtc.vert_blank_start + 1) % vt) % vt < (vb ? vb : 256);
+           (vy + vt - crtc.vert_blank_start % vt) % vt < (vb ? vb : 256);
 }
 
 // Allocate board VRAM and establish chip state before any firmware access.

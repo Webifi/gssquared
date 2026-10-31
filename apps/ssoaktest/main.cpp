@@ -626,11 +626,11 @@ static void display_control_checks() {
     OTI087 v; mode(v);
     for(unsigned a=0;a<2048;++a) v.mem_linear_w(a,1);
     // Blanking is independent of display end (IBM pp2-58/73). Vertical
-    // blank begins on the line after its start register and includes end.
+    // blank begins at its start register and stops before its end register.
     cr(v,2,2); cr(v,3,4); cr(v,0x15,2); cr(v,0x16,4);
     auto pixels=frame(v);
     for(unsigned y=0;y<8;++y) for(unsigned x=0;x<32;++x)
-        EQ(pixels[y*32+x],(x>=8&&x<16)||(y>=3&&y<=5) ? color(0) : color(1));
+        EQ(pixels[y*32+x],(x>=8&&x<16)||(y>=2&&y<=3) ? color(0) : color(1));
     beam(v,3,0); EQ(v.io_r(0x3da)&1,1); beam(v,6,0); EQ(v.io_r(0x3da)&1,0);
     // Sync skew changes the pulse edges; screen off keeps those pulses.
     mode(v); cr(v,5,0x30); beam(v,0,48); EQ(v.hsync_r(),0);
