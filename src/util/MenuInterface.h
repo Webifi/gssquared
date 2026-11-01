@@ -56,6 +56,10 @@ public:
 	int getSecondSightFirmware();
 	// Saved Second Sight capture-logic selection, independent of firmware.
 	bool getSecondSightLattice();
+	// Save the Second Sight INT0 pull-up modification: stock=false, added=true.
+	void setSecondSightInt0Pullup(bool fitted);
+	// Saved INT0 pull-up selection for menu checkmarks, possibly pending Restart.
+	bool getSecondSightInt0Pullup();
 	void toggleSleepMode();
 	void toggleAudioDecorrelation();
 	void toggleRightMouseAccel();

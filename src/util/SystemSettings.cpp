@@ -33,7 +33,8 @@
 
 // The browser memory filesystem lasts for one page session. Keep Second
 // Sight hardware choices in local storage as a small integer: bits 0-1 are
-// the firmware index, bit 2 selects the revised U7 Lattice chip equations.
+// the firmware index, bit 2 selects the revised U7 Lattice chip equations,
+// bit 3 adds the INT0 pull-up modification.
 // Return zero (original hardware) if storage is absent or unavailable.
 EM_JS(int, load_second_sight_options, (), {
     try { return Number(localStorage.getItem('gs2.second_sight')) || 0; }
@@ -150,12 +151,14 @@ bool SystemSettings::load() {
     ss_view_ = SS_VIEW_BOTH;
     ss_firmware_ = SS_FW_14;
     ss_lattice_v2_ = false;
+    ss_int0_pullup_ = false;
 #ifdef __EMSCRIPTEN__
     // Reject invalid encodings; firmware and capture-chip choices are independent.
     const int options = load_second_sight_options();
-    if (options >= 0 && options <= 6 && (options & 3) < SS_FW_COUNT) {
+    if (options >= 0 && options <= 14 && (options & 3) < SS_FW_COUNT) {
         ss_firmware_ = options & 3;
         ss_lattice_v2_ = options & 4;
+        ss_int0_pullup_ = options & 8;
     }
 #endif
     mono_persistence_ = true;
@@ -227,6 +230,7 @@ bool SystemSettings::load() {
             const auto lattice = (*ss)["lattice_chip"].value<std::string>();
             migrate_lattice = !lattice && (*ss).contains("u7");
             ss_lattice_v2_ = lattice.value_or((*ss)["u7"].value_or("original")) == "v2.0";
+            ss_int0_pullup_ = (*ss)["int0_pullup"].value_or(false);
         }
         if (const auto* display = table["display"].as_table()) {
             ss_text_mode_ = (*display)["ss_text_mode"].value_or(false);
@@ -304,9 +308,10 @@ bool SystemSettings::save() const {
     toml::table second_sight;
     second_sight.insert("firmware", ss_firmware_ == SS_FW_20 ? "2.0" : ss_firmware_ == SS_FW_15 ? "1.5" : "1.4");
     second_sight.insert("lattice_chip", ss_lattice_v2_ ? "v2.0" : "original");
+    second_sight.insert("int0_pullup", ss_int0_pullup_);
     table.insert("second_sight", std::move(second_sight));
 #ifdef __EMSCRIPTEN__
-    save_second_sight_options(ss_firmware_ | (ss_lattice_v2_ ? 4 : 0));
+    save_second_sight_options(ss_firmware_ | (ss_lattice_v2_ ? 4 : 0) | (ss_int0_pullup_ ? 8 : 0));
 #endif
 
     toml::table display;
@@ -428,6 +433,13 @@ void SystemSettings::set_ss_firmware(int firmware) {
 void SystemSettings::set_ss_lattice_v2(bool enabled) {
     if (ss_lattice_v2_ == enabled) return;
     ss_lattice_v2_ = enabled;
+    save();
+}
+
+// Persist the INT0 pull-up modification for the next power-on or Restart.
+void SystemSettings::set_ss_int0_pullup(bool fitted) {
+    if (ss_int0_pullup_ == fitted) return;
+    ss_int0_pullup_ = fitted;
     save();
 }
 

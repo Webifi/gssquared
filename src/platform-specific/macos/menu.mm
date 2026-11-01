@@ -194,10 +194,11 @@ I don't know what all these words mean exactly. But I confirmed it does seem to 
 	// preferences; hardware selections may still be waiting for Restart.
 	if (menuItem.action == @selector(secondSightOptions:))
 		return getMenuInterface()->hasSecondSightZ180();
-	if (menuItem.action == @selector(secondSightFirmware:) || menuItem.action == @selector(secondSightLattice:)) {
+	if (menuItem.action == @selector(secondSightFirmware:) || menuItem.action == @selector(secondSightLattice:) ||
+		menuItem.action == @selector(secondSightInt0:)) {
 		MenuInterface *mi = getMenuInterface();
-		const bool firmware = menuItem.action == @selector(secondSightFirmware:);
-		const int selected = firmware ? mi->getSecondSightFirmware() : mi->getSecondSightLattice();
+		const int selected = menuItem.action == @selector(secondSightFirmware:) ? mi->getSecondSightFirmware()
+			: menuItem.action == @selector(secondSightLattice:) ? mi->getSecondSightLattice() : mi->getSecondSightInt0Pullup();
 		[menuItem setState:(selected == menuItem.tag) ? NSControlStateValueOn : NSControlStateValueOff];
 		return mi->hasSecondSightZ180();
 	}
@@ -328,6 +329,8 @@ I don't know what all these words mean exactly. But I confirmed it does seem to 
 - (void)secondSightFirmware:(id)sender { getMenuInterface()->setSecondSightFirmware([sender tag]); }
 // A nonzero tag selects the revised Second Sight U7 Lattice chip equations.
 - (void)secondSightLattice:(id)sender { getMenuInterface()->setSecondSightLattice([sender tag] != 0); }
+// A nonzero tag adds the Second Sight INT0 pull-up modification.
+- (void)secondSightInt0:(id)sender { getMenuInterface()->setSecondSightInt0Pullup([sender tag] != 0); }
 // A nonzero tag selects the AppleColor RGB cable sensed by Second Sight.
 - (void)secondSightMonitor:(id)sender { getMenuInterface()->setSecondSightMonitor([sender tag] != 0); }
 // Tags 0/1/2 select IIgs/card/both without stopping Second Sight execution.
@@ -825,16 +828,18 @@ static void setupMenus(void) {
 		action:nil keyEquivalent:@""] autorelease];
 	[ssNotice setEnabled:NO];
 	[ssMenu addItem:ssNotice];
-	for (int group = 0; group < 2; ++group) {
-		NSString *title = group == 0 ? @"Firmware" : @"Lattice chip";
+	for (int group = 0; group < 3; ++group) {
+		NSString *title = group == 0 ? @"Firmware" : group == 1 ? @"Lattice chip" : @"INT0 pull-up";
 		NSMenu *submenu = [[[NSMenu alloc] initWithTitle:title] autorelease];
 		NSMenuItem *parent = [[[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""] autorelease];
 		[parent setSubmenu:submenu];
 		[ssMenu addItem:parent];
-		NSArray *labels = group == 0 ? @[@"1.4-BEEF (original)", @"1.5-CBFC", @"2.0-3277"] : @[@"Original (BE8C)", @"v2.0 (BBB1)"];
+		NSArray *labels = group == 0 ? @[@"1.4-BEEF (original)", @"1.5-CBFC", @"2.0-3277"]
+			: group == 1 ? @[@"Original (BE8C)", @"v2.0 (BBB1)"] : @[@"None (stock card)", @"Added (card modification)"];
+		SEL action = group == 0 ? @selector(secondSightFirmware:) : group == 1 ? @selector(secondSightLattice:) : @selector(secondSightInt0:);
 		for (NSUInteger i = 0; i < labels.count; ++i) {
 			NSMenuItem *item = [[[NSMenuItem alloc] initWithTitle:labels[i]
-				action:group == 0 ? @selector(secondSightFirmware:) : @selector(secondSightLattice:)
+				action:action
 				keyEquivalent:@""] autorelease];
 			[item setTarget:sMenuHandler];
 			[item setTag:i];

@@ -78,6 +78,15 @@ leave the previous mode active.
 AppleColor RGB double hires (mode `$FA`) uses 260 lines at 59.9 Hz in these
 builds, correcting the 222-line, 70.2 Hz timing (firmware fault E30).
 
+**Settings → Second Sight → INT0 pull-up** selects **None (stock card)**, the
+default, or **Added (card modification)**. The card wires the VGA chip's
+vertical retrace interrupt to the Z180 INT0 input with no pull-up resistor, so
+on a stock card that interrupt never reaches the Z180. A pull-up resistor from
+Z180 pin 10 to +5 V makes it work. No Second Sight firmware uses it; software
+that waits for the vertical retrace must read port `$3DA` bit 3 on a stock card.
+Like the other hardware options, it takes effect at the next power-on or
+**Machine → Restart**.
+
 The original Lattice chip reproduces the factory BE8C map, including its
 hardware faults. Lattice v2.0 corrects direct bank-1 capture with RAMWRT on,
 supplies the border-write event, and selects the right capture bank with

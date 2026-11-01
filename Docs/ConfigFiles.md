@@ -523,4 +523,4 @@ App settings and leftover PrefPath BRAM stay in the per-user prefs directory (`S
 - **[SystemConfigTOML.md](SystemConfigTOML.md)** — full schema, validation rules, connection port registry, load/save behavior, and design notes.
 - **Fixture examples in the repo** — `apps/systemconfigtest/fixtures/*.gs2` and `* Settings.txt` are real files GS2’s tests load successfully; useful as copy-paste starting points.
 
-The `[second_sight]` app-settings table stores `firmware` (`1.4`, `1.5`, or `2.0`) and `lattice_chip` (`original` or `v2.0`). Older chip selections are migrated when settings load.
+The `[second_sight]` app-settings table stores `firmware` (`1.4`, `1.5`, or `2.0`), `lattice_chip` (`original` or `v2.0`) and `int0_pullup` (`false` for the stock card, `true` for the pull-up modification). Older chip selections are migrated when settings load.

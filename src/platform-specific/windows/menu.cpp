@@ -43,6 +43,7 @@ static HMENU g_appleKeysMenu = NULL;
 static HMENU g_secondSightMenu = NULL;
 static HMENU g_ssFirmwareMenu = NULL;
 static HMENU g_ssLatticeMenu = NULL;
+static HMENU g_ssInt0Menu = NULL;
 static HMENU g_ssDisplayMenu = NULL;
 static HMENU g_ssMonitorMenu = NULL;
 static HMENU g_ssViewMenu = NULL;
@@ -292,9 +293,9 @@ static void updatePopupState(HMENU popup)
     }
 
     // Second Sight hardware checkmarks show the saved choice for Restart.
-    if (popup == g_ssFirmwareMenu || popup == g_ssLatticeMenu) {
-        const bool firmware = popup == g_ssFirmwareMenu;
-        const int selected = firmware ? mi->getSecondSightFirmware() : mi->getSecondSightLattice();
+    if (popup == g_ssFirmwareMenu || popup == g_ssLatticeMenu || popup == g_ssInt0Menu) {
+        const int selected = popup == g_ssFirmwareMenu ? mi->getSecondSightFirmware()
+            : popup == g_ssLatticeMenu ? mi->getSecondSightLattice() : mi->getSecondSightInt0Pullup();
         for (int i = 0; i < GetMenuItemCount(popup); ++i) {
             setItemCheck(popup, i, i == selected);
             setItemEnable(popup, i, mi->hasSecondSightZ180());
@@ -440,6 +441,8 @@ static void dispatchCommand(UINT id)
     case MENU_SS_FIRMWARE_20: mi->setSecondSightFirmware(2); return;
     case MENU_SS_LATTICE_ORIGINAL: mi->setSecondSightLattice(false); return;
     case MENU_SS_LATTICE_V2: mi->setSecondSightLattice(true); return;
+    case MENU_SS_INT0_NONE: mi->setSecondSightInt0Pullup(false); return;
+    case MENU_SS_INT0_ADDED: mi->setSecondSightInt0Pullup(true); return;
     case MENU_SS_MONITOR_VGA: mi->setSecondSightMonitor(false); return;
     case MENU_SS_MONITOR_RGB: mi->setSecondSightMonitor(true); return;
     case MENU_SS_SCREEN_IIGS: mi->setSecondSightView(0); return;
@@ -658,14 +661,18 @@ static void setupMenus()
     g_secondSightMenu = CreatePopupMenu();
     g_ssFirmwareMenu = CreatePopupMenu();
     g_ssLatticeMenu = CreatePopupMenu();
+    g_ssInt0Menu = CreatePopupMenu();
     AppendMenuW(g_secondSightMenu, MF_STRING | MF_GRAYED, 0, L"Applies at power-on or Restart");
     AppendMenuW(g_ssFirmwareMenu, MF_STRING, MENU_SS_FIRMWARE_14, L"1.4-BEEF (original)");
     AppendMenuW(g_ssFirmwareMenu, MF_STRING, MENU_SS_FIRMWARE_15, L"1.5-CBFC");
     AppendMenuW(g_ssFirmwareMenu, MF_STRING, MENU_SS_FIRMWARE_20, L"2.0-3277");
     AppendMenuW(g_ssLatticeMenu, MF_STRING, MENU_SS_LATTICE_ORIGINAL, L"Original (BE8C)");
     AppendMenuW(g_ssLatticeMenu, MF_STRING, MENU_SS_LATTICE_V2, L"v2.0 (BBB1)");
+    AppendMenuW(g_ssInt0Menu, MF_STRING, MENU_SS_INT0_NONE, L"None (stock card)");
+    AppendMenuW(g_ssInt0Menu, MF_STRING, MENU_SS_INT0_ADDED, L"Added (card modification)");
     AppendMenuW(g_secondSightMenu, MF_STRING | MF_POPUP, reinterpret_cast<UINT_PTR>(g_ssFirmwareMenu), L"Firmware");
     AppendMenuW(g_secondSightMenu, MF_STRING | MF_POPUP, reinterpret_cast<UINT_PTR>(g_ssLatticeMenu), L"Lattice chip");
+    AppendMenuW(g_secondSightMenu, MF_STRING | MF_POPUP, reinterpret_cast<UINT_PTR>(g_ssInt0Menu), L"INT0 pull-up");
     AppendMenuW(g_settingsPopup, MF_STRING | MF_POPUP, reinterpret_cast<UINT_PTR>(g_secondSightMenu), L"Second Sight");
 
     AppendMenuW(g_settingsPopup, MF_STRING, IDM_SETTINGS_SLEEP,        L"Sleep / Busy Wait");

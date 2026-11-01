@@ -39,6 +39,7 @@ struct secondsight_z180_state_t {
     bool rgb_monitor = false;
     int firmware = SystemSettings::SS_FW_14;
     bool lattice_v2 = false;
+    bool int0_pullup = false;
     std::string eeprom_path;
     std::array<uint16_t, 64> eeprom_initial;
     // Card for the clock's Mega II cycle hook; cleared before the card goes.
@@ -126,9 +127,10 @@ void init_secondsight_z180(computer_t *computer, SlotType_t slot) {
     auto *st = new secondsight_z180_state_t;
     st->firmware = settings.ss_firmware();
     st->lattice_v2 = settings.ss_lattice_v2();
+    st->int0_pullup = settings.ss_int0_pullup();
     st->card = std::make_unique<SSCard>(image.get(), computer->clock->get_c14m_per_second(),
                                       st->lattice_v2 ? SSCapture::LatticeMap::V2 : SSCapture::LatticeMap::BE8C,
-                                      SSCard::Presentation::Latest);
+                                      SSCard::Presentation::Latest, st->int0_pullup);
     st->rgb_monitor = SystemSettings::instance().ss_rgb_monitor();
     st->card->video().monitor_type_w(st->rgb_monitor);
     if (computer->get_config_path().empty()) Paths::calc_pref(st->eeprom_path, "secondsight.eeprom");
@@ -186,16 +188,20 @@ void init_secondsight_z180(computer_t *computer, SlotType_t slot) {
         return true;
     });
     st->display = std::make_unique<SecondSightDisplay>(computer, *st->card);
-    // Replacing ROM or capture equations requires a card power cycle. An
-    // ordinary Apple reset preserves the U7 Lattice chip and captured RAM.
+    // Replacing ROM or capture equations, or fitting the INT0 pull-up, requires
+    // a card power cycle. An ordinary Apple reset preserves the U7 Lattice chip
+    // and captured RAM.
     computer->register_reset_handler([st, computer](bool cold_start) {
         const auto &settings = SystemSettings::instance();
-        if (cold_start && (st->firmware != settings.ss_firmware() || st->lattice_v2 != settings.ss_lattice_v2())) {
+        if (cold_start && (st->firmware != settings.ss_firmware() || st->lattice_v2 != settings.ss_lattice_v2() ||
+                           st->int0_pullup != settings.ss_int0_pullup())) {
             auto image = secondsight_load_rom(settings.ss_rom_filename());
             st->card->change_hardware(computer->clock->get_c14m(), image.get(),
-                                     settings.ss_lattice_v2() ? SSCapture::LatticeMap::V2 : SSCapture::LatticeMap::BE8C);
+                                     settings.ss_lattice_v2() ? SSCapture::LatticeMap::V2 : SSCapture::LatticeMap::BE8C,
+                                     settings.ss_int0_pullup());
             st->firmware = settings.ss_firmware();
             st->lattice_v2 = settings.ss_lattice_v2();
+            st->int0_pullup = settings.ss_int0_pullup();
         } else {
             // With unchanged hardware, Apple restart does not power off U7 Lattice chip.
             st->card->reset(computer->clock->get_c14m());

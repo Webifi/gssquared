@@ -320,6 +320,13 @@ static void build_menu_bar()
                     mi->setSecondSightLattice(true);
                 end_menu();
             }
+            if (begin_menu("INT0 pull-up")) {
+                if (ImGui::MenuItem("None (stock card)", nullptr, !mi->getSecondSightInt0Pullup()))
+                    mi->setSecondSightInt0Pullup(false);
+                if (ImGui::MenuItem("Added (card modification)", nullptr, mi->getSecondSightInt0Pullup()))
+                    mi->setSecondSightInt0Pullup(true);
+                end_menu();
+            }
             end_menu();
         }
         if (!mi->hasSecondSightZ180()) ImGui::EndDisabled();

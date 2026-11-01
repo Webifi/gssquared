@@ -70,7 +70,7 @@ int main() {
     // HALT ($76) identifies the replacement image. A power cycle clears
     // SRAM and execution totals but must preserve display identity and EEPROM.
     rom[0] = 0x76;
-    card.change_hardware(100, rom.data(), SSCapture::LatticeMap::V2);
+    card.change_hardware(100, rom.data(), SSCapture::LatticeMap::V2, false);
     assert(card.memory_read(0) == 0x76 && card.processor().cycles() == 0);
     assert(card.capture_state().lattice_map == SSCapture::LatticeMap::V2);
     assert(card.sram_data()[0x400] == 0 && card.copies == 0);

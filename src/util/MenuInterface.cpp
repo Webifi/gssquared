@@ -76,6 +76,16 @@ bool MenuInterface::getSecondSightLattice() {
 	return SystemSettings::instance().ss_lattice_v2();
 }
 
+// Store the next power-on INT0 pull-up choice.
+void MenuInterface::setSecondSightInt0Pullup(bool fitted) {
+	SystemSettings::instance().set_ss_int0_pullup(fitted);
+}
+
+// Return the persisted INT0 pull-up option, which may await Restart.
+bool MenuInterface::getSecondSightInt0Pullup() {
+	return SystemSettings::instance().ss_int0_pullup();
+}
+
 // Enable Second Sight controls only while its independent display is installed.
 bool MenuInterface::hasSecondSightZ180() {
 	return computer_ && computer_->video_system && bool(computer_->video_system->additional_display);

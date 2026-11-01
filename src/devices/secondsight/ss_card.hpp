@@ -69,8 +69,9 @@ public:
 
     // Copy ROM_SIZE bytes from rom; ticks_per_second is the host clock rate.
     // lattice_map selects the U7 Lattice chip equations used for capture.
+    // int0_pullup adds the /INT0 pull-up that the stock board lacks.
     explicit SSCard(const uint8_t *rom, uint64_t ticks_per_second, SSCapture::LatticeMap lattice_map = SSCapture::LatticeMap::BE8C,
-                    Presentation presentation = Presentation::Exact);
+                    Presentation presentation = Presentation::Exact, bool int0_pullup = false);
     // Finish outstanding worker jobs before destroying the chips and callbacks.
     ~SSCard();
     // Start asynchronous card execution on native or browser pthread builds.
@@ -81,8 +82,8 @@ public:
     void synchronize();
     // Reset at an absolute host tick; power_on also clears RAM and card latches.
     void reset(uint64_t ticks, bool power_on = false);
-    // Install a ROM_SIZE-byte image and capture map at ticks as a power cycle.
-    void change_hardware(uint64_t ticks, const uint8_t *image, SSCapture::LatticeMap lattice_map);
+    // Install a ROM_SIZE-byte image, capture map and INT0 pull-up at ticks as a power cycle.
+    void change_hardware(uint64_t ticks, const uint8_t *image, SSCapture::LatticeMap lattice_map, bool int0_pullup);
     // Observe one Apple access; update read data and return extra RDY wait ticks.
     uint64_t observe(megaii_transfer_t &transfer);
     // Drain captured accesses and run the card through this absolute host tick.
@@ -186,6 +187,10 @@ private:
     // Host-side decode must not read capture while the worker changes it.
     // The installed Lattice map changes only at a stopped hardware change.
     SSCapture::LatticeMap host_lattice_map;
+    // Schematic: the /INT0 net joins only Z180 pin 10 and Oak CINT (pin 90),
+    // with no pull-up, so on a stock card CINT never reaches INT0. Changes
+    // only at a stopped hardware change.
+    bool int0_pullup;
     const Presentation presentation_mode;
     OTI087 vga;
     std::unique_ptr<Z180> cpu;

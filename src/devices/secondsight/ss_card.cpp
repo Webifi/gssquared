@@ -159,8 +159,8 @@ static inline void cpu_relax() {
 
 // Connect the processor pins to the board decode and VGA chip. The serial RTS
 // output selects the ROM overlay, so its callback must update direct-read pages.
-SSCard::SSCard(const uint8_t *image, uint64_t rate, SSCapture::LatticeMap lattice_map, Presentation presentation)
-    : capture(lattice_map), host_lattice_map(lattice_map), presentation_mode(presentation), ticks_per_second(rate) {
+SSCard::SSCard(const uint8_t *image, uint64_t rate, SSCapture::LatticeMap lattice_map, Presentation presentation, bool int0_pullup)
+    : capture(lattice_map), host_lattice_map(lattice_map), int0_pullup(int0_pullup), presentation_mode(presentation), ticks_per_second(rate) {
     // image supplies exactly ROM_SIZE bytes; rate is host ticks per second.
     // Keep a truncated integer tick period, matching Z180Time::from_ticks.
     // Zero rate is handled as an unreachable deadline by transfer_deadline().
@@ -234,7 +234,7 @@ SSCard::SSCard(const uint8_t *image, uint64_t rate, SSCapture::LatticeMap lattic
         advance_copy(copy_cpu_edge);
         copy_in_cpu_edge = false;
     });
-    vga.cint_callback = [this](bool asserted) { cpu->set_input(Z180::Input::INT0, asserted); };
+    vga.cint_callback = [this](bool asserted) { cpu->set_input(Z180::Input::INT0, this->int0_pullup && asserted); };
     reset(0, true);
 }
 
@@ -746,14 +746,15 @@ uint64_t SSCard::dispatch(uint64_t ticks, bool wait, megaii_transfer_t *access) 
     return held;
 }
 
-// Replace the EPROM and Lattice map as a power cycle; keep the display and
-// nonvolatile EEPROM objects that the application already owns.
-void SSCard::change_hardware(uint64_t ticks, const uint8_t *image, SSCapture::LatticeMap lattice_map) {
+// Replace the EPROM, Lattice map and INT0 pull-up as a power cycle; keep the
+// display and nonvolatile EEPROM objects that the application already owns.
+void SSCard::change_hardware(uint64_t ticks, const uint8_t *image, SSCapture::LatticeMap lattice_map, bool int0_pullup) {
     catch_up(ticks);
     prepare_reset();
     std::memcpy(rom.data(), image, rom.size());
     capture.lattice_map = lattice_map;
     host_lattice_map = lattice_map;
+    this->int0_pullup = int0_pullup;
     reset(ticks, true);
 }
 

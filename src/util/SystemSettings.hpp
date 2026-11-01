@@ -58,6 +58,7 @@ private:
     int ss_view_ = SS_VIEW_BOTH;
     int ss_firmware_ = SS_FW_14;
     bool ss_lattice_v2_ = false;
+    bool ss_int0_pullup_ = false;
     /** GPU monochrome phosphor persistence. */
     bool mono_persistence_ = true;
     /** Display scaling: false = smooth (linear), true = sharp (pixel art). */
@@ -127,12 +128,16 @@ public:
     int ss_firmware() const { return ss_firmware_; }
     // Second Sight U7 Lattice chip choice; true selects the BBB1 equations.
     bool ss_lattice_v2() const { return ss_lattice_v2_; }
+    // Second Sight /INT0 pull-up, a card modification; false is the stock card.
+    bool ss_int0_pullup() const { return ss_int0_pullup_; }
     // Resource filename for the selected Second Sight EPROM; no file I/O here.
     const char *ss_rom_filename() const;
     // Persist a valid Second Sight firmware index without changing the capture chip.
     void set_ss_firmware(int firmware);
     // Persist the independent Second Sight capture-chip choice for Restart.
     void set_ss_lattice_v2(bool enabled);
+    // Persist the Second Sight INT0 pull-up modification for Restart.
+    void set_ss_int0_pullup(bool fitted);
 
     bool ss_text_mode() const { return ss_text_mode_; }
     // Second Sight cable sense: false=VGA, true=AppleColor RGB.

@@ -83,6 +83,7 @@ Capture Mouse - see [Using a Mouse](Mouse.md)
   * Second Sight
     * Firmware: 1.4-BEEF (original) / 1.5-CBFC / 2.0-3277
     * Lattice chip: Original (BE8C) / v2.0 (BBB1)
+    * INT0 pull-up: None (stock card) / Added (card modification)
   * Sleep / Busy Wait
   * Mono Helper
   * Right Mouse Button Accelerate
@@ -95,7 +96,7 @@ Capture Mouse - see [Using a Mouse](Mouse.md)
 
 **Apple Keys** chooses the host keys for Open Apple and Closed Apple. Available whether or not a machine is running. See [Using a Keyboard](KeyboardShortcuts.md).
 
-**Second Sight** selects the firmware and Lattice chip for **Second Sight (with Z180)**. The options are grayed out without that card, remembered in app settings (also across browser reloads), and applied at power-on or **Machine → Restart**. Every firmware/chip pairing is selectable. Changing firmware leaves the chip choice intact. Defaults are 1.4-BEEF (original) and Original (BE8C). See [Second Sight](Cards_SecondSight.md).
+**Second Sight** selects the firmware and Lattice chip for **Second Sight (with Z180)**. The options are grayed out without that card, remembered in app settings (also across browser reloads), and applied at power-on or **Machine → Restart**. Every firmware/chip pairing is selectable. Changing firmware leaves the chip choice intact. Defaults are 1.4-BEEF (original) and Original (BE8C). **INT0 pull-up** adds a card modification that lets the VGA retrace interrupt reach the Z180; the default is the stock card. See [Second Sight](Cards_SecondSight.md).
 
 **Sleep / Busy Wait** — when checked, the emulator sleeps between frames instead of busy-waiting (lower host CPU). Same as the [`-s`](CommandLine.md) flag.
 
