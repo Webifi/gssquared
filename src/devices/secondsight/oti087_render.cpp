@@ -313,19 +313,19 @@ void OTI087::prepare_render_colors() {
 }
 
 // IBM p2-95 lists different pan units for 9-dot text and 256-color pixels.
-unsigned OTI087::horizontal_pan(bool split) const {
-    if (split && bit(attribute.data[0x10], 5))
+unsigned OTI087::horizontal_pan(const scan_row_t &row) const {
+    if (row.split && bit(attribute.data[0x10], 5))
         return 0;
     // Packed modes use IBM's eight-dot rule: zero means no shift, then
     // one pixel per step. Second Sight reference, docs/15-oak-drawing.md,
     // "Horizontal pixel panning"; Oak's BIOS sets pan zero in packed modes.
     if (packed())
-        return attribute.pel_shift & 7;
+        return row.pan & 7;
     if (!gc.alpha_dis && !bit(sequencer.data[1], 0))
-        return attribute.pel_shift == 8 ? 0 : (attribute.pel_shift & 7) + 1;
+        return row.pan == 8 ? 0 : (row.pan & 7) + 1;
     if (gc.shift256 && bit(attribute.data[0x10], 6))
-        return (attribute.pel_shift & 6) >> 1;
-    return attribute.pel_shift & 7;
+        return (row.pan & 6) >> 1;
+    return row.pan & 7;
 }
 
 // Constant-register frames can calculate a row directly. During raster
@@ -344,14 +344,15 @@ OTI087::scan_row_t OTI087::scan_row(unsigned y) const {
     // Line compare clears the address counter in either field. The odd
     // field's initial offset belongs only to the region before that reset.
     return {(split ? 0 : crtc.start_addr) + (rows * fields + (split ? 0 : y % fields)) * crtc.offset * 2,
-            scan % crtc.maximum_scan_line, (split ? line - split_line : line) % scan_repeat, split};
+            scan % crtc.maximum_scan_line, (split ? line - split_line : line) % scan_repeat, split,
+            attribute.pel_shift};
 }
 
 // IBM pp2-71/103: add the *current* offset only when the row rolls over.
 // A mid-frame write therefore changes following rows without moving old ones.
 void OTI087::next_scan_row(scan_row_t &row, unsigned field_line) const {
     if ((field_line + 1) % vertical_divisor() == 0 && field_line / vertical_divisor() == crtc.line_compare) {
-        row = {0, 0, 0, true};
+        row = {0, 0, 0, true, row.pan};
         return;
     }
     if (++row.repeat <= crtc.scan_doubling)
@@ -385,6 +386,7 @@ void OTI087::render_changes(ss_video_buffer_t surface) {
         }
         if (!field_line)
             row = {crtc.start_addr + (beam_y / total) * crtc.offset * 2, crtc.preset_row_scan, 0, false};
+        row.pan = attribute.pel_shift;
         render_row = &row;
         while (x < timing.total_width) {
             int end = timing.total_width;
@@ -419,7 +421,7 @@ void OTI087::draw_packed(ss_video_buffer_t &surface, ss_video_rect_t const &clip
     packed_row.resize(clip.width() * bytes);
     for (int y = clip.top; y <= clip.bottom; ++y) {
         auto const row = scan_row(y);
-        uint32_t const address = row.address * 8 + horizontal_pan(row.split) * bytes;
+        uint32_t const address = row.address * 8 + horizontal_pan(row) * bytes;
         packed_bytes_bounded(packed_row.data(), memory.data(), address + clip.left * bytes, packed_row.size());
         packed_colors(&surface.pixel(y, clip.left), packed_row.data(), clip.width(), ramdac, render_dac_colors.data());
     }
@@ -451,7 +453,7 @@ void OTI087::draw_text(ss_video_buffer_t &surface, ss_video_rect_t const &clip) 
     for (int y = clip.top; y <= clip.bottom; ++y) {
         auto const row = scan_row(y);
         unsigned const glyph_row = row.scan;
-        unsigned const pan = horizontal_pan(row.split);
+        unsigned const pan = horizontal_pan(row);
         for (int x = clip.left; x <= clip.right;) {
             unsigned dx = x + pan;
             unsigned const character = dx / dots;
@@ -522,7 +524,7 @@ void OTI087::draw_planar(ss_video_buffer_t &surface, ss_video_rect_t const &clip
         }
     for (int y = clip.top; y <= clip.bottom; ++y) {
         auto const row = scan_row(y);
-        unsigned const pan = horizontal_pan(row.split);
+        unsigned const pan = horizontal_pan(row);
         for (int x = clip.left; x <= clip.right;) {
             unsigned const dx = x + pan;
             uint32_t const address = serializer_address(row, dx / dots, count_shift, load_shift) * 4;
@@ -558,7 +560,7 @@ void OTI087::draw_vga256(ss_video_buffer_t &surface, ss_video_rect_t const &clip
     unsigned const plane_mask = (attribute.data[0x12] & 15) * 17;
     for (int y = clip.top; y <= clip.bottom; ++y) {
         auto const row = scan_row(y);
-        unsigned const pan = horizontal_pan(row.split);
+        unsigned const pan = horizontal_pan(row);
         if (Nine && eight_bit) {
             // PW pairs consecutive dots, so some pairs include the zero ninth dot.
             unsigned const dot = (clip.left + pan) * 2;
@@ -700,7 +702,7 @@ void OTI087::draw_cursor(ss_video_buffer_t &surface, ss_video_rect_t const &clip
                         // fetch. Resolve a row only at its first inverted pixel.
                         if (inverted_row != y) {
                             row = scan_row(y);
-                            pan = horizontal_pan(row.split);
+                            pan = horizontal_pan(row);
                             inverted_row = y;
                         }
                         unsigned const dot = x - skew + pan;
@@ -835,7 +837,7 @@ bool OTI087::render_packed_frame(ss_video_buffer_t surface) {
         unsigned(surface.height), starts.empty() ? crtc.start_addr : starts.front().address,
         crtc.offset, crtc.maximum_scan_line, crtc.scan_doubling, crtc.preset_row_scan,
         crtc.line_compare, unsigned(get_interlace_mode()), vertical_divisor(),
-        (starts.empty() ? attribute.pel_shift : starts.front().pan) | (unsigned(attribute.data[0x10] & 0x20) << 8) | (bytes << 16)};
+        attribute.pel_shift | (unsigned(attribute.data[0x10] & 0x20) << 8) | (bytes << 16)};
     bool const address_changes = starts.size() > 1 && starts[1].line < surface.height;
     // Width changes the populated-memory bound even when row addresses do not.
     if (!packed_addresses_valid || width_changed || address_changes || packed_address_state != address_state) {
@@ -851,9 +853,7 @@ bool OTI087::render_packed_frame(ss_video_buffer_t surface) {
                 uint32_t address = row.address;
                 if (!row.split && !starts.empty())
                     address += starts[change].address - crtc.start_addr;
-                uint8_t const pan = starts.empty() ? attribute.pel_shift : starts[change].pan;
-                unsigned const shift = row.split && bit(attribute.data[0x10], 5) ? 0 : pan & 7;
-                packed_addresses[y] = address * 8 + shift * bytes;
+                packed_addresses[y] = address * 8 + horizontal_pan(row) * bytes;
                 if (packed_addresses[y] >= VRAM_SIZE || row_bytes > VRAM_SIZE - packed_addresses[y])
                     packed_rows_in_memory = false;
                 next_scan_row(row, field_line++);
@@ -920,18 +920,15 @@ void OTI087::render_frame(ss_video_buffer_t surface) {
         return;
     }
     uint32_t address = crtc.start_addr;
-    uint8_t pan = attribute.pel_shift;
     if (starts.empty())
         render(surface, surface.bounds());
     for (unsigned i = 0; i < starts.size(); i++) {
         int end = i + 1 < starts.size() ? starts[i + 1].line - 1 : surface.height - 1;
         crtc.start_addr = starts[i].address;
-        attribute.pel_shift = starts[i].pan;
         if (end >= starts[i].line)
             render(surface, {0, surface.width - 1, starts[i].line, end});
     }
     crtc.start_addr = address;
-    attribute.pel_shift = pan;
 }
 
 // Expose scanout geometry and palette to presentation without changing registers.
@@ -968,7 +965,7 @@ void OTI087::draw_cga(ss_video_buffer_t &surface, const ss_video_rect_t &clip) {
     unsigned const load_shift = serializer_load_shift();
     for (int y = clip.top; y <= clip.bottom; y++) {
         auto const row = scan_row(y);
-        unsigned const pan = horizontal_pan(row.split);
+        unsigned const pan = horizontal_pan(row);
         for (int x = clip.left; x <= clip.right;) {
             unsigned const dx = x + pan;
             uint32_t const address = serializer_address(row, dx / dots, count_shift, load_shift) * 4;

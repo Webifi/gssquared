@@ -183,10 +183,9 @@ void OTI087::io_w(uint32_t port, uint8_t data) {
             unsigned const addr = attribute.index & 31;
             bool const mode = attribute.state && addr == 0x10;
             // Index bit 5, Palette Address Source (PAS), enables display output.
-            // Other index bits only select a register. Panning is
-            // recorded when its display latch changes at vertical retrace.
+            // Other index bits only select a register.
             if ((!attribute.state && ((data ^ attribute.index) & 0x20)) ||
-                (attribute.state && addr <= 0x14 && addr != 0x13 && data != attribute_read(attribute.index)))
+                (attribute.state && addr <= 0x14 && data != attribute_read(attribute.index)))
                 record_display_change();
             attribute_write(data);
             if (mode)
@@ -629,7 +628,7 @@ void OTI087::reset() {
     next_latch = std::numeric_limits<double>::infinity();
     next_interrupt = std::numeric_limits<double>::infinity();
     update_raster_deadline();
-    starts = {{0, 0, 0}};
+    starts = {{0, 0}};
     display_changes.clear();
     display_changes.reserve(16);
     render_row = nullptr;
@@ -695,7 +694,7 @@ uint8_t OTI087::attribute_read(unsigned offset) const {
     return 0xff;
 }
 
-// Latch VGA attribute controls; pixel panning has a separate display latch.
+// Store VGA attribute controls. Pixel panning has no retrace latch (IBM p2-95).
 void OTI087::attribute_write(uint8_t data) {
     if (!attribute.state)
         attribute.index = data;
@@ -711,7 +710,7 @@ void OTI087::attribute_write(uint8_t data) {
             if (addr == 0x12)
                 attribute.data[addr] = data & 0x3f;
             if (addr == 0x13)
-                attribute.pel_shift_latch = attribute.data[addr] = data & 15;
+                attribute.pel_shift = attribute.data[addr] = data & 15;
             if (addr == 0x14)
                 attribute.data[addr] = data & 15;
         }
@@ -804,7 +803,7 @@ void OTI087::recompute_params() {
     next_blank = now + time_until_pos(active_end_line());
     next_line_zero = now + time_until_pos(0);
     if (vpos() == 0)
-        starts = {{0, crtc.start_addr, attribute.pel_shift}};
+        starts = {{0, crtc.start_addr}};
 
     schedule_display_latch();
     double irq_delay = time_until_pos((crtc.vert_disp_end + 1) * vertical_divisor());
@@ -854,17 +853,15 @@ void OTI087::schedule_display_latch() {
     next_latch = now + delay;
 }
 
-// Latch the scanout address/pan; record a boundary only when they change.
+// Latch the scanout address; record a boundary only when it changes.
 void OTI087::display_latch() {
     uint32_t address = latch_start_addr();
-    uint8_t pan = attribute.pel_shift_latch;
     // Keep only addressing changes, not one entry per scan line. The renderer
     // later replays these row boundaries without executing the chip again.
-    if (address != crtc.start_addr || pan != attribute.pel_shift) {
+    if (address != crtc.start_addr) {
         record_display_change();
-        starts.push_back({vpos(), address, pan});
+        starts.push_back({vpos(), address});
         crtc.start_addr = address;
-        attribute.pel_shift = pan;
     }
     schedule_display_latch();
 }
@@ -911,7 +908,7 @@ void OTI087::advance(double seconds) {
                 next_frame = std::numeric_limits<double>::infinity();
             }
             if (event == next_line_zero) {
-                starts = {{0, crtc.start_addr, attribute.pel_shift}};
+                starts = {{0, crtc.start_addr}};
                 display_changes.clear();
                 next_line_zero = now + timing.frame_period();
             }

@@ -1056,6 +1056,95 @@ static void memory_end_and_pan_checks() {
     std::puts("PASS unpopulated DRAM without mirroring, latch reads, linear/planar banks and fine packed scrolling");
 }
 
+// Second Sight reference, docs/15-oak-drawing.md, "Hardware scrolling" to
+// "Bands that start anywhere"; IBM pp2-67, 2-77, 2-95 and 2-103.
+static void display_address_and_pan_checks() {
+    // A 16-color byte-mode mode with 1280 pixels and CRTC $13 = $50, as Oak
+    // mode 58h: 160 addresses per row, so row 409 starts at 65,440.
+    OTI087 v; mode(v,false,false);
+    cr(v,0,195); cr(v,1,159); cr(v,2,160); cr(v,3,0x80); cr(v,4,170); cr(v,5,15);
+    cr(v,6,0xae); cr(v,7,0x1f); cr(v,9,0x40); cr(v,0x10,0xa4); cr(v,0x12,0x9f);
+    cr(v,0x13,0x50); cr(v,0x15,0xa0); cr(v,0x16,0xaa);
+    EQ(v.display_timing().width,1280); EQ(v.display_timing().height,416);
+    // Each address shows its own value: pixel k of the cell is nibble k,
+    // high nibble first. Undriven planes give $FFFFFFFF.
+    auto put=[&](uint32_t a) {
+        for(unsigned p=0;p<4;++p) {
+            uint8_t byte=0;
+            for(unsigned k=0;k<8;++k) byte|=((a>>(4*(7-k)+p))&1)<<(7-k);
+            v.mem_linear_w(a*4+p,byte);
+        }
+    };
+    auto shown=[](const std::vector<uint32_t> &pixels, unsigned y, unsigned cell) {
+        uint32_t a=0;
+        for(unsigned k=0;k<8;++k) a=a<<4|(pixels[y*1280+cell*8+k]&15);
+        return a;
+    };
+    for(uint32_t a=0;a<66000;++a) put(a);
+    for(uint32_t a=0x3fff0;a<0x40000;++a) put(a);
+    beam(v,420); beam(v,0);
+    auto pixels=frame(v);
+    for(unsigned y=408;y<=410;++y) for(unsigned cell=0;cell<160;++cell) EQ(shown(pixels,y,cell),y*160+cell);
+    EQ(shown(pixels,409,95),65535); EQ(shown(pixels,409,96),65536);
+    // The 1 MB end: address $40000 is linear $100000. It shows undriven
+    // DRAM, never address 0.
+    cr(v,0xc,0xff); cr(v,0xd,0xf0); oak(v,0x17,3); beam(v,420); beam(v,0);
+    pixels=frame(v);
+    for(unsigned cell=0;cell<160;++cell) EQ(shown(pixels,0,cell),cell<16?0x3fff0+cell:0xffffffff);
+    for(unsigned cell=0;cell<160;++cell) EQ(shown(pixels,1,cell),0xffffffff);
+
+    // The start address, ext $17 included, latches once at the start of
+    // vertical retrace (CRTC $10 = 12 here).
+    mode(v,true); for(unsigned a=0;a<4096;++a) v.mem_linear_w(a,a&255);
+    v.mem_linear_w(0x80010,0x5a);
+    beam(v,2); cr(v,0xd,1); beam(v,11); pixels=frame(v);
+    EQ(pixels[0],color(0)); EQ(pixels[7*64],color(0xc0));
+    beam(v,12); beam(v,0); pixels=frame(v); EQ(pixels[0],color(8));
+    beam(v,13); cr(v,0xd,2); beam(v,0); pixels=frame(v); EQ(pixels[0],color(8));
+    beam(v,12); beam(v,0); pixels=frame(v); EQ(pixels[0],color(16));
+    beam(v,3); oak(v,0x17,1); beam(v,11); pixels=frame(v); EQ(pixels[0],color(16));
+    beam(v,12); beam(v,0); pixels=frame(v); EQ(pixels[0],color(0x5a));
+
+    // Attribute $13 has no retrace latch. A start written during display and
+    // a pan written just after vertical sync starts show on the same frame.
+    mode(v,true); for(unsigned a=0;a<4096;++a) v.mem_linear_w(a,a&255);
+    beam(v,2); cr(v,0xd,1); beam(v,12); attr(v,0x13,3);
+    pixels=frame(v); EQ(pixels[0],color(0));
+    beam(v,0); pixels=frame(v);
+    for(unsigned y=0;y<8;++y) EQ(pixels[y*64],color((8+3+y*64)&255));
+    // A pan write mid-line shows from the next line, in packed and in
+    // unchained 256-color modes (pan 4 = 2 pixels there).
+    mode(v,true); for(unsigned a=0;a<4096;++a) v.mem_linear_w(a,a&255);
+    beam(v,3,8); attr(v,0x13,2); beam(v,8); pixels=frame(v);
+    for(unsigned y=0;y<8;++y) for(unsigned x:{0U,8U,63U})
+        EQ(pixels[y*64+x],color((y*64+x+(y>3?2:0))&255));
+    mode(v); for(unsigned a=0;a<2048;++a) v.mem_linear_w(a,a&255);
+    beam(v,3,8); attr(v,0x13,4); beam(v,8); pixels=frame(v);
+    for(unsigned y=0;y<8;++y) for(unsigned x:{0U,8U,31U})
+        EQ(pixels[y*32+x],color((y*32+x+(y>3?2:0))&255));
+
+    // Rows below line compare restart at address 0 and add the offset per
+    // row. Attribute $10 bit 5 forces pan 0 there until vertical sync.
+    for(unsigned compat:{0U,1U}) {
+        mode(v,true); for(unsigned a=0;a<4096;++a) v.mem_linear_w(a,a&255);
+        cr(v,0xd,1); attr(v,0x13,3); attr(v,0x10,compat?0x21:1);
+        cr(v,0x18,2); cr(v,7,0); cr(v,9,0); beam(v,12); beam(v,0);
+        for(unsigned frames=0;frames<2;++frames) {
+            pixels=frame(v);
+            for(unsigned y=0;y<8;++y) for(unsigned x:{0U,63U})
+                EQ(pixels[y*64+x],color(((y<3?8+y*64+3:(y-3)*64+(compat?0:3))+x)&255));
+            beam(v,12); beam(v,0);
+        }
+    }
+
+    // CRTC $13 written mid-frame moves the start of every following row.
+    mode(v,true); for(unsigned a=0;a<4096;++a) v.mem_linear_w(a,a&255);
+    beam(v,2,3); cr(v,0x13,1); beam(v,8); pixels=frame(v);
+    const unsigned rows[]={0,64,128,144,160,176,192,208};
+    for(unsigned y=0;y<8;++y) EQ(pixels[y*64],color(rows[y]));
+    std::puts("PASS display address past 64K, 1 MB end, start latch, unlatched pan, split restart and mid-frame offset");
+}
+
 static void cursor_087x_checks() {
     // Second Sight reference, docs/06-video.md, "Hardware cursor": WHATVGA's
     // 256-color restriction includes VGA chained/unchained and Oak packed.
@@ -1259,7 +1348,8 @@ int main() {
     memory_checks(); font_address_checks(); oak_checks(); timing_checks(); deadline_checks(); raster_checks(); text_and_cga_checks();
     dac_checks(); address_checks(); display_control_checks(); sequencer_checks();
     cursor_checks(); cursor_position_checks(); cursor_index_checks(); cursor_size_checks(); packed_address_checks(); dma_checks();
-    revision_e_checks(); wide_function_checks(); memory_end_and_pan_checks(); cursor_087x_checks();
+    revision_e_checks(); wide_function_checks(); memory_end_and_pan_checks(); display_address_and_pan_checks();
+    cursor_087x_checks();
     test_register_checks();
     std::printf("PASS %u document-derived checks\n",checks);
 }

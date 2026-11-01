@@ -347,7 +347,6 @@ private:
         int state;
         uint8_t prot_bit;
         uint8_t pel_shift;
-        uint8_t pel_shift_latch;
     } attribute;
 
     std::vector<uint8_t> memory;
@@ -369,12 +368,11 @@ private:
     double next_interrupt = 0, next_raster = 0;
     double ready_until = 0, access_delay = 0;
     uint64_t frames = 0;
-    // Display-address/pan value from a latch edge at this raster line. Owned
-    // by OTI087; execution records it, synchronized rendering consumes it.
+    // Display address from a latch edge at this raster line. Owned by
+    // OTI087; execution records it, synchronized rendering consumes it.
     struct start_change_t {
         int line;
         uint32_t address;
-        uint8_t pan;
     };
     std::vector<start_change_t> starts;
     // Display controls saved before a visible register write. OTI087 owns the
@@ -405,10 +403,13 @@ private:
     // this temporary value. Address is in CRTC counter units, scan is the
     // glyph/plane row, repeat counts duplicate scans, and split marks the
     // region below line compare, where the address counter restarts at zero.
+    // Pan is attribute $13 at the start of the line: IBM p2-95 gives it no
+    // retrace latch, so a write shows from the next line.
     struct scan_row_t {
         uint32_t address;
         unsigned scan, repeat;
         bool split;
+        uint8_t pan;
     };
     // Borrowed only during render_changes; null lets each row derive its address.
     const scan_row_t *render_row = nullptr;
@@ -435,7 +436,7 @@ private:
     // Cache DAC and attribute colors once per register span.
     void prepare_render_colors();
     // Return leftward pixel displacement; split permits the line-compare reset.
-    unsigned horizontal_pan(bool split) const;
+    unsigned horizontal_pan(const scan_row_t &row) const;
     // Scan-line division doubles counter durations; total includes two encoded
     // trailing lines (IBM CRTC vertical-total and mode-control registers).
     unsigned vertical_divisor() const { return crtc.sldiv ? 2 : 1; }
@@ -477,9 +478,9 @@ private:
     // Decode programmed counters/clocks into raster geometry and event times
     // (Oak pp. 39-40; IBM VGA/XGA Technical Reference, CRTC registers).
     void recompute_params();
-    // Schedule the edge where programmed start/pan values become active (Oak pp. 39-40).
+    // Schedule the edge where the programmed start address becomes active (Oak pp. 39-40).
     void schedule_display_latch();
-    // Copy programmed start/pan into active values and record the affected raster row.
+    // Copy the programmed start address into the active value and record the affected raster row.
     void display_latch();
     // Lower readiness for the modelled memory delay; write selects read or write latency.
     void access_begin(bool write);
