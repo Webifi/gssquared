@@ -1194,8 +1194,9 @@ inline void SSCard::service_card_deadlines(Z180Time now) {
         schedule_copy_release(now);
     else if (copy_phase == CopyPhase::synchronize)
         schedule_copy_edge(copy_deadline, now);
-    const double event = vga.next_event();
-    if (now >= vga_deadline(event))
+    // cpu_time() can round below now, so one pass can leave a later Oak event
+    // whose deadline has also passed. A grant limited to it would be empty.
+    for (double event = vga.next_event(); now >= vga_deadline(event); event = vga.next_event())
         vga.advance(std::max(cpu_time(), event));
 }
 
