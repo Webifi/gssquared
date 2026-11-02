@@ -88,6 +88,11 @@ private:
     bool mouse_captured = false;
     bool visible = false;
     bool window_failed = false;
+    // The monitor cannot lock to the current signal and shows no picture.
+    // A changed lock takes effect after its timing holds for a whole card
+    // frame: lock_since is the card frame of the change.
+    bool out_of_range = false, lock_candidate = true;
+    uint64_t lock_since = 0;
 
     // Two small retained draw records; pending is private until submission.
     std::array<Presentation, 2> presentations;

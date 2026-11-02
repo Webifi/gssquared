@@ -628,6 +628,8 @@ public:
     uint8_t extended_register(unsigned reg) const { return extended_read(reg, true); }
     uint8_t extended_index() const { return index; }
     uint8_t misc_output() const { return miscellaneous_output; }
+    // Cable sense: true when a VGA monitor is attached.
+    bool vga_monitor() const { return (monitor_override < 0 ? 1 : monitor_override) & 1; }
     uint8_t feature_control_r() const { return feature_control; }
     // Board inputs are copied as stored; neither accessor changes address decode.
     bool output_divided() const { return output_divider; }

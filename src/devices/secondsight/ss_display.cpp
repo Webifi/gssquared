@@ -15,6 +15,7 @@
  */
 
 #include "ss_display.hpp"
+#include "ss_monitor.hpp"
 #include "ss_card.hpp"
 #include "oti087.hpp"
 #include "computer.hpp"
@@ -163,17 +164,47 @@ SDL_Texture *SecondSightDisplay::prepare_texture(SDL_Renderer *dest, Texture &te
     const int vs = crtc.vert_blank_start;
     const int vn = (crtc.vert_blank_end - crtc.vert_blank_start) & 255;
     const int rows = timing.height / (crtc.vert_disp_end + 1);
-    auto horizontal = SecondSightCrt::Axis::visible(timing.total_width,
-        hs * timing.total_width / timing.line_characters,
-        (hn ? hn : 64) * timing.total_width / timing.line_characters);
-    auto vertical = SecondSightCrt::Axis::visible(timing.total_height,
-        vs * rows, (vn ? vn : 256) * rows);
-    // VGA and AppleColor RGB both show the whole unblanked scan, overscan
-    // included, for any signal the card sends.
+    // The monitor window, centered on the active display by the owner's
+    // position controls.
+    const double line_hz = 1.0 / timing.line_period();
+    const int fields = timing.interlaced ? 2 : 1;
+    const bool vga_monitor = video.vga_monitor();
+    SecondSightMonitorWindow window = ss_monitor::card_monitor(vga_monitor, line_hz, fields / timing.frame_period(),
+        1.0 / timing.pixel_period(), timing.total_width, timing.total_height, fields,
+        video.misc_output() & 0x40, video.misc_output() & 0x80);
+    if (!window.locked) {
+        // No picture, as on a monitor that cannot lock.
+        window.width = timing.width;
+        window.height = timing.height;
+    }
+    // A monitor locks to timing that holds for a whole frame. The states that
+    // pass while a mode is programmed never reach the screen.
+    if (window.locked != lock_candidate) {
+        lock_candidate = window.locked;
+        lock_since = video.frame_number();
+    }
+    if (lock_candidate == out_of_range && video.frame_number() >= lock_since + 2) {
+        out_of_range = !lock_candidate;
+        if (out_of_range)
+            fprintf(stderr, "Second Sight %s monitor: out of range (%.2f kHz, %.2f Hz)\n",
+                vga_monitor ? "VGA" : "AppleColor RGB", line_hz / 1000.0,
+                fields / timing.frame_period());
+    }
+    const int window_width = std::clamp(window.width, 1, timing.total_width);
+    const int window_height = std::clamp(window.height, 1, timing.total_height);
+    const int left = ss_monitor::floor_half(window_width - timing.width);
+    const int top = ss_monitor::floor_half(window_height - timing.height);
+    const int hfirst = int(hs * timing.total_width / timing.line_characters);
+    const int hlength = std::min(timing.total_width, int((hn ? hn : 64) * timing.total_width / timing.line_characters));
+    const int vfirst = vs * rows, vlength = std::min(timing.total_height, (vn ? vn : 256) * rows);
+    const SecondSightCrt::Axis horizontal{timing.total_width, (timing.total_width - left) % timing.total_width,
+        window_width, hfirst % timing.total_width, hlength};
+    const SecondSightCrt::Axis vertical{timing.total_height, (timing.total_height - top) % timing.total_height,
+        window_height, vfirst % timing.total_height, vlength};
     const bool filtered = computer->video_system->get_crt_shader_enabled();
     const int phase = timing.interlaced ? video.odd_field_sync_phase() : 0;
     const bool odd = timing.interlaced && video.vpos() >= timing.total_height / 2;
-    texture.crt.configure(horizontal, vertical, filtered, timing.interlaced, video.border_color().value, true,
+    texture.crt.configure(horizontal, vertical, filtered, timing.interlaced, video.border_color().value, !out_of_range,
         phase, int(timing.total_width), odd, timing.interlaced);
     const int width = texture.crt.width(), height = texture.crt.height();
     if (width < 1 || height < 1 || width > OTI087::MAX_FRAME_DIMENSION * 2 || height > OTI087::MAX_FRAME_DIMENSION * 2)
