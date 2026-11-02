@@ -22,6 +22,7 @@
 #include "debug.hpp"
 #include "devices/speaker/speaker.hpp"
 #include "devices/speaker/SpeakerFX.hpp"
+#include "devices/es5503/c03c_attenuator.hpp"
 #include "util/DebugHandlerIDs.hpp"
 #include "NClock.hpp"
 #include "util/printf_helper.hpp"
@@ -170,6 +171,9 @@ void init_mb_speaker(computer_t *computer,  SlotType_t slot) {
 
     speaker_state->sp = new SpeakerFX(speaker_state->audio_system, speaker_state->clock->get_c14m_per_second(), 44100, 128*1024, 4096);
     speaker_state->event_buffer = speaker_state->sp->event_buffer;
+    // The IIgs speaker shares the DOC's $C03C attenuator.
+    if (platform_is_iigs(computer->platform->id))
+        speaker_state->sp->set_volume_gains(k_c03c_gain);
     
     speaker_state->speaker_recording = nullptr;
 

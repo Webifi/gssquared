@@ -1,6 +1,8 @@
 #pragma once
 
 #include <SDL3/SDL.h>
+#include <algorithm>
+#include <iterator>
 
 #include "devices/speaker/NEventBuffer.hpp"
 #include "util/AudioSystem.hpp"
@@ -27,6 +29,7 @@ class SpeakerFX {
         constexpr static speaker_t volume_scale = 5120ULL;
         // Evenly scaled from 0 to 15, with 15 == 5120ULL
         uint16_t volume = 6;
+        // The Apple II default; an Apple IIgs replaces it with its $C03C law.
         constexpr static uint64_t volume_table[16] = {
             0,
             1304,
@@ -45,6 +48,10 @@ class SpeakerFX {
             26028,
             32767,
         };
+        uint64_t volume_levels[16];
+        void update_scale() {
+            sample_scale = (volume_levels[volume] << FRACTION_BITS) / cycles_per_sample;
+        }
         constexpr static uint32_t polarity_flipper = 1;
         speaker_t decay_coeff = static_cast<speaker_t>(0.9990f * (1ULL << FRACTION_BITS));
 
@@ -78,6 +85,7 @@ class SpeakerFX {
         SpeakerFX(AudioSystem *audio_system, uint32_t input_rate, uint32_t output_rate, uint64_t min_event_buffer_size, uint32_t min_sample_buffer_size) {
             this->audio_system = audio_system;
             this->event_buffer = new EventBufferRing(next_power_of_2(min_event_buffer_size));
+            std::copy(std::begin(volume_table), std::end(volume_table), volume_levels);
 
             this->output_rate = (speaker_t)output_rate;
             configure((speaker_t)input_rate);
@@ -167,7 +175,7 @@ class SpeakerFX {
                         if (event_buffer->peek_oldest(event_time)) {
                             if (volume != (uint16_t)event_time.data) { // detect volume change and update sample_scale.
                                 volume = (uint16_t)event_time.data;
-                                sample_scale = (volume_table[volume] << (FRACTION_BITS)) / cycles_per_sample;
+                                update_scale();
                             }
                             event_buffer->pop();
                             // Claude added from here---
@@ -226,11 +234,18 @@ class SpeakerFX {
             return num_samples;
         }
         
+        // Replace the volume law with gains relative to step 15 (32767).
+        void set_volume_gains(const float (&gain)[16]) {
+            for (int i = 0; i < 16; i++)
+                volume_levels[i] = (uint64_t)(32767.0f * gain[i] + 0.5f);
+            update_scale();
+        }
+
         void configure(uint64_t input_rate) {
             this->input_rate = input_rate;
             cycles_per_sample = (input_rate << FRACTION_BITS) / output_rate;
             //sample_scale = (volume_scale << (FRACTION_BITS)) / cycles_per_sample;
-            sample_scale = (volume_table[volume] << (FRACTION_BITS)) / cycles_per_sample;
+            update_scale();
             hold_counter_value = (0.030f / (1.0f / output_rate));
         }
         

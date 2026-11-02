@@ -346,7 +346,7 @@ void ensoniq_write_C0xx(void *context, uint32_t address, uint8_t data) {
                 st->soundadrh = 0;
             }
             // System volume nibble. Stored here; the next generate_samples call
-            // divides the mix by this step (~2 dB each, 15 = no cut).
+            // applies its k_c03c_gain step (15 = no cut).
             st->audio_system->set_volume(data & 0x0F);
             break;
             

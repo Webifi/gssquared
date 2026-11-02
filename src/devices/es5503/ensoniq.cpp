@@ -1,4 +1,5 @@
 #include "ensoniq.hpp"
+#include "c03c_attenuator.hpp"
 #include "computer.hpp"
 #include <algorithm>
 #include <cstring>
@@ -15,23 +16,24 @@ static constexpr uint32_t wavemasks[8] = { 0x1ff00, 0x1fe00, 0x1fc00, 0x1f800, 0
 static constexpr uint32_t accmasks[8]  = { 0xff, 0x1ff, 0x3ff, 0x7ff, 0xfff, 0x1fff, 0x3fff, 0x7fff };
 static constexpr int      resshifts[8] = { 9, 10, 11, 12, 13, 14, 15, 16 };
 
-// $C03C attenuator, Q8 divisors. Same ~2 dB steps as SpeakerFX::volume_table.
-// The mix is divided by (entry/256). Step 15 is 256, so the mix is unchanged.
-// Step 0 is mute. Every other step is a cut. There is no /8 and no boost.
-static constexpr int32_t k_sys_atten_q8[16] = {
-    0,
-    6434, 5108, 4058, 3222, 2560, 2034, 1615,
-    1283, 1019, 809, 643, 511, 406, 322, 256
-};
-
-// Analog gain after the DOC attenuator. One averaged slot at system volume 6
-// would otherwise sit at −18 dBFS; 64× (+36 dB) brings a $3C voice on the
-// highest oscillator of a 4-oscillator frame to about 0 dBFS. Applied in the
-// same int64 product as the slot divide so the remainder is not thrown away first.
+// Analog gain after the DOC attenuator; the int16 limit stands for the LM380
+// output swing, about 1 V inside its 12 V rail (TI LM380 data sheet: 14 Vpp
+// at 18 V). The ROM 03 board takes the DOC through 3.9k I/V and difference
+// stages, the 5-pole filter, a 10k/10k sum, the MC3340 at nibble 15 and the
+// LM380's gain of 50. The board adds no feedback resistor to the DOC volume
+// op-amp, so the DOC's own matched resistors set that stage near unity. With
+// the DOC output in the middle of the 4.5k-9k spread that Apple IIgs Technical
+// Note 9 gives between machines, the LM380 then limits a continuous signal of
+// about 2 counts at volume 255, 36 dB below a full-scale DOC signal. 64x puts
+// the int16 limit there; that spread moves it about 3 dB either way. Applied
+// in the same int64 product as the slot divide so the remainder is not
+// thrown away first.
 static constexpr int32_t k_doc_makeup = 64;
 
-// MC3340 control voltage does not follow sub-ms $C03C blips. One-pole, 20 ms.
-static constexpr float k_vol_slew_ms = 20.0f;
+// The MC3340 control pin is filtered by SC41 22 uF and SC42 0.1 uF against the
+// ladder's 4.1k in parallel with the pin's own source, about 4.7k (data sheet
+// Figs. 3 and 4): one pole of about 48 ms. The glide is applied to the gain.
+static constexpr float k_vol_slew_ms = 48.0f;
 
 //==============================================================================
 // ES5503 Implementation
@@ -270,14 +272,13 @@ void ES5503::generate_samples(int16_t *buffer, int num_samples, uint8_t sys_volu
 
     // The DAC walks N enabled oscillators plus 2 extra slots per frame, and the
     // analog filter averages those slots. The last oscillator was already added
-    // three times (it occupies the two extra slots). System volume only cuts,
-    // gliding toward the step (k_vol_slew_ms). Makeup is the amplifier after
-    // that. One product, then one divide:
+    // three times (it occupies the two extra slots). System volume only cuts
+    // (k_c03c_gain), gliding toward the step (k_vol_slew_ms). Makeup is the
+    // amplifier after that. One product, then one divide:
     //   (sum * volume_q16 * makeup) / (slots * 65536)
     // int64 holds it: the largest sum (~1.1e6) times 65536 times 64 is ~4e12.
     const int32_t slots = m_oscsenabled + 2;
-    const int32_t atten = k_sys_atten_q8[sys_volume & 15];
-    const float target = (atten == 0) ? 0.0f : 256.0f / (float)atten;
+    const float target = k_c03c_gain[sys_volume & 15];
     if (m_vol_gain < 0.0f) m_vol_gain = target;
     const float dt = 1.0f / (float)calculate_output_rate();
     const float alpha = 1.0f - std::exp(-dt / (k_vol_slew_ms * 0.001f));
