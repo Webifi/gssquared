@@ -63,6 +63,16 @@ python3 assets/web/serve.py 8000 build-web
 Opening `GSSquared.html` directly from `file://` will **not** work (no headers,
 and WASM fetch is blocked). Always serve over HTTP with the headers above.
 
+### Hosts that cannot send headers
+
+Static hosts such as GitHub Pages cannot send the headers. Serve the page over
+HTTPS with `isolation-worker.js` (copied into the build directory) beside it.
+When the page is not isolated, it registers that service worker and loads once
+more; the worker adds the headers of `live.htaccess` to every same-origin
+response. Later visits go through the worker from the start. When the server
+sends the headers itself, the page never registers the worker. Without HTTPS
+(or `localhost`) the page shows a message and does not start.
+
 ## Deploying to gssquared.net/live
 
 ```bash
