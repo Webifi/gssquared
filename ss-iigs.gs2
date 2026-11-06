@@ -1,0 +1,17 @@
+gs2_version = 1
+id = "5e0c5f2a-2b1d-4c8e-9a7f-5ec0d51647a1"
+name = "Apple IIgs with Second Sight"
+description = "ROM 03 with Second Sight in slot 3. Drop a disk image on drive 7/1, then choose Machine > Restart."
+platform = "apple2gs_rom3"
+clock = "ntsc"
+scanner = "apple2gs"
+builtin = false
+bram = "0000000100000d060201010001000000000007060201010000000f06060005060100000000000001000000000502020000002d2d000000000000020202060800010203040506070a000102030405060708090a0b0c0d0e0f0000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff362d9c87"
+
+[[cards]]
+slot = 3
+card = "second_sight_z180"
+
+[[cards]]
+slot = 7
+card = "bazfast3"
