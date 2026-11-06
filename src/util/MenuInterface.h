@@ -61,6 +61,7 @@ public:
 	// Saved INT0 pull-up selection for menu checkmarks, possibly pending Restart.
 	bool getSecondSightInt0Pullup();
 	void toggleSleepMode();
+	void togglePauseWhenMinimized();
 	void toggleAudioDecorrelation();
 	void toggleRightMouseAccel();
 	void toggleCrtShader();
@@ -89,6 +90,7 @@ public:
 	int  getCurrentSpeed();
 	int  getCurrentMonitor();
 	bool getSleepMode();
+	bool getPauseWhenMinimized();
 	bool getAudioDecorrelation();
 	bool getRightMouseAccel();
 	bool getCrtShader();

@@ -367,6 +367,8 @@ add_library(gs2_devices_speaker     src/devices/speaker/speaker.cpp )
 
 add_library(gs2_devices_memexp     src/devices/memoryexpansion/memexp.cpp )
 
+add_library(gs2_devices_ramworks   src/devices/ramworks/ramworks.cpp )
+
 add_library(gs2_devices_parallel     src/devices/parallel/parallel.cpp )
 target_link_libraries(gs2_devices_parallel PUBLIC gs2_serial_devices)
 
@@ -381,8 +383,6 @@ add_library(gs2_devices_mouse
     src/devices/applemouseiii/MouseController.cpp
     src/devices/applemouseiii/PIA6520.cpp
 )
-
-add_library(gs2_devices_iiememory src/devices/iiememory/iiememory.cpp)
 
 add_library(gs2_devices_ensoniq src/devices/es5503/ensoniq.cpp src/devices/es5503/soundglu.cpp)
 
@@ -510,7 +510,7 @@ add_library(gs2_debugger  src/debugger/debugwindow.cpp src/debugger/Monitor.cpp
     src/debugger/DebugProtocolServer.cpp src/debugger/BreakpointTable.cpp
     src/debugger/DebugVideoView.cpp)
 
-add_library(gs2_mmu src/mmus/mmu.cpp src/mmus/mmu_ii.cpp src/mmus/mmu_iie.cpp src/mmus/mmu_iigs.cpp)
+add_library(gs2_mmu src/mmus/mmu.cpp src/mmus/mmu_ii.cpp src/mmus/mmu_iie.cpp src/mmus/mmu_iie2.cpp src/mmus/mmu_iigs.cpp)
 
 #add_library(gs2_cpu src/cpus/cpu_6502.cpp src/cpus/cpu_65c02.cpp src/cpu.cpp )
 #add_library(gs2_cpu src/cpus/core_6502.cpp src/cpu.cpp )
@@ -607,12 +607,12 @@ set(GS2_DEVICE_REGISTRY_LIBS
     gs2_devices_vidhd
     gs2_devices_game
     gs2_devices_memexp
+    gs2_devices_ramworks
     gs2_devices_parallel
     gs2_devices_videx
     gs2_devices_pdblock2
     gs2_devices_pdblock3
     gs2_devices_mockingboard
-    gs2_devices_iiememory
     gs2_devices_ensoniq
     gs2_devices_scc8530
     gs2_devices_ssc
@@ -740,12 +740,12 @@ target_link_libraries(GSSquared
     gs2_devices_vidhd
     gs2_devices_game
     gs2_devices_memexp
+    gs2_devices_ramworks
     gs2_devices_parallel
     gs2_devices_videx
     gs2_devices_pdblock2
     gs2_devices_pdblock3
     gs2_devices_mockingboard
-    gs2_devices_iiememory
     gs2_devices_ensoniq
     gs2_devices_scc8530
     gs2_devices_ssc
@@ -803,6 +803,10 @@ if(NOT EMSCRIPTEN)
     add_subdirectory(apps/iigsmmutest)
 
     add_subdirectory(apps/mmutest)
+
+    # iiemmutest drove the removed iiememory device. The golden and oracle stay
+    # for iiemmu2test. Do not build apps/iiemmutest.
+    add_subdirectory(apps/iiemmu2test)
 
     add_subdirectory(apps/cputest)
 

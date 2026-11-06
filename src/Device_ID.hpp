@@ -18,7 +18,6 @@ typedef enum device_id {
     DEVICE_ID_PARALLEL,
     DEVICE_ID_VIDEX,
     DEVICE_ID_MOCKINGBOARD,
-    DEVICE_ID_IIE_MEMORY,
     DEVICE_ID_MOUSE,
     DEVICE_ID_CASSETTE,
     DEVICE_ID_VIDHD,
@@ -33,6 +32,7 @@ typedef enum device_id {
     DEVICE_ID_UTHERNET2,
     DEVICE_ID_SUPER_SERIAL,
     DEVICE_ID_VOC,
+    DEVICE_ID_RAMWORKS,
     // Firmware-executing Second Sight, distinct from the high-level display card.
     DEVICE_ID_SECOND_SIGHT_Z180,
     NUM_DEVICE_IDS

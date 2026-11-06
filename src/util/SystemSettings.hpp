@@ -63,6 +63,8 @@ private:
     bool mono_persistence_ = true;
     /** Display scaling: false = smooth (linear), true = sharp (pixel art). */
     bool scaling_sharp_ = false;
+    /** Freeze the guest while the main window is minimized. */
+    bool pause_when_minimized_ = false;
 
     /** Last .gs2 open/save selection (full file path when known). */
     std::string last_config_path_;
@@ -146,6 +148,7 @@ public:
     int ss_view() const { return ss_view_; }
     bool mono_persistence() const { return mono_persistence_; }
     bool scaling_sharp() const { return scaling_sharp_; }
+    bool pause_when_minimized() const { return pause_when_minimized_; }
 
     void set_hud_stats(bool enabled);
     void set_hud_drives(bool enabled);
@@ -158,11 +161,13 @@ public:
     void set_ss_view(int view);
     void set_mono_persistence(bool enabled);
     void set_scaling_sharp(bool sharp);
+    void set_pause_when_minimized(bool enabled);
 
     void toggle_hud_stats();
     void toggle_hud_drives();
     void toggle_disconnected_when_no_gamepad();
     void toggle_ss_text_mode();
+    void toggle_pause_when_minimized();
 
     const std::string& last_config_path() const { return last_config_path_; }
     const std::string& last_disk_path() const { return last_disk_path_; }

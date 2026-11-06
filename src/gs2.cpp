@@ -67,7 +67,7 @@
 #include "debugger/BreakpointTable.hpp"
 #include "computer.hpp"
 #include "mmus/mmu_ii.hpp"
-#include "mmus/mmu_iie.hpp"
+#include "mmus/mmu_iie2.hpp"
 #include "mmus/mmu_iigs.hpp"
 #include "mmus/iigs_memory.hpp"
 #include "ui/SelectSystem.hpp"
@@ -303,6 +303,32 @@ static bool gs2_web_begin_frame() {
 }
 #endif
 
+static bool window_has_input_focus(SDL_Window *window) {
+    if (window == nullptr) {
+        return false;
+    }
+    return (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0;
+}
+
+// The user is still in this app if the emulation window or an open debugger
+// window has input focus. Same rule as display-sleep inhibition.
+static bool emulator_or_debugger_focused(computer_t *computer) {
+    if (computer == nullptr) {
+        return false;
+    }
+    video_system_t *vs = computer->video_system;
+    // The Second Sight monitor window counts the same as the Apple monitor.
+    if (vs != nullptr && (window_has_input_focus(vs->window)
+        || window_has_input_focus(vs->additional_window))) {
+        return true;
+    }
+    if (computer->debug_window != nullptr && computer->debug_window->window_open
+        && window_has_input_focus(computer->debug_window->window)) {
+        return true;
+    }
+    return false;
+}
+
 void frame_sleep(computer_t *computer, uint64_t last_cycle_time, uint64_t ns_per_frame)
     /* uint64_t frame_count) */ {
     computer->frame_slipped = false;
@@ -329,7 +355,11 @@ void frame_sleep(computer_t *computer, uint64_t last_cycle_time, uint64_t ns_per
         // TODO: log clock slip for later display.
         //printf("Clock slip: event_time: %10llu, audio_time: %10llu, display_time: %10llu, app_event_time: %10llu, total: %10llu\n", event_time, audio_time, display_time, app_event_time, event_time + audio_time + display_time + app_event_time);
     } else {
-        if (gs2_app_values.sleep_mode) { // sleep most of it, but more aggressively sneak up on target than SDL_DelayPrecise does itself
+        // Sleep toggle, or the app is not focused. The menu checkmark stays the
+        // user's choice; unfocus only overrides the wait for this frame.
+        // Sleep most of it, but sneak up on the target more aggressively than
+        // SDL_DelayPrecise does itself.
+        if (gs2_app_values.sleep_mode || !emulator_or_debugger_focused(computer)) {
             SDL_DelayPrecise((wakeup_time - SDL_GetTicksNS())*0.95);
         }
         // busy wait sync cycle time
@@ -784,7 +814,7 @@ struct GS2AppState {
 
     // MMU pointers tracked for cleanup
     MMU_II *mmu_ii = nullptr;
-    MMU_IIe *mmu_iie = nullptr;
+    MMU_II *mmu_iie = nullptr; // IIe: MMU_IIe2. IIgs Mega II: MMU_IIe2 (switches off).
     MMU_IIgs *mmu_iigs = nullptr;
 };
 
@@ -1257,12 +1287,19 @@ void transition_to_emulation(GS2AppState *state, const SystemConfig_t *system_co
             computer->set_mmu(state->mmu_ii);
             computer->debug_window->set_mmu(state->mmu_ii);
             break;
-        case MMU_MMU_IIE:
-            state->mmu_iie = new MMU_IIe(256, 128*1024, (uint8_t *) rd->main_rom_data);
-            computer->cpu->set_mmu(state->mmu_iie);
-            computer->set_mmu(state->mmu_iie);
-            computer->debug_window->set_mmu(state->mmu_iie);
+        case MMU_MMU_IIE: {
+            auto *mmu = new MMU_IIe2(256, 128 * 1024, (uint8_t *)rd->main_rom_data);
+            mmu->set_message_bus(computer->mbus);
+            state->mmu_iie = mmu;
+            computer->cpu->set_mmu(mmu);
+            computer->set_mmu(mmu);
+            computer->debug_window->set_mmu(mmu);
+            computer->register_debug_display_handler(
+                "iiememory",
+                DH_IIEMEMORY,
+                [mmu]() { return mmu->debug_formatter(); });
             break;
+        }
         case MMU_MMU_IIGS:
         {
             // Bank $FF (the IIe-compatibility ROM the emulation-mode 6502
@@ -1288,8 +1325,9 @@ void transition_to_emulation(GS2AppState *state, const SystemConfig_t *system_co
                    exp_ram / (1024 * 1024),
                    fast_ram,
                    last_bank);
-            state->mmu_iie = new MMU_IIe(256, 128*1024, /* (uint8_t *) */rd->main_rom_data + rom_bank_ff_offset + 0xC000);
-            state->mmu_iigs = new MMU_IIgs(256, (int)fast_ram, (uint32_t) main_rom_size, /* (uint8_t *) */rd->main_rom_data, state->mmu_iie);
+            auto *mega = new MMU_IIe2(256, 128 * 1024, rd->main_rom_data + rom_bank_ff_offset + 0xC000, false);
+            state->mmu_iie = mega;
+            state->mmu_iigs = new MMU_IIgs(256, (int)fast_ram, (uint32_t)main_rom_size, rd->main_rom_data, mega);
         }
             state->mmu_iigs->init_map();
             computer->cpu->set_mmu(state->mmu_iigs); // cpu gets FPI
@@ -2513,13 +2551,6 @@ static void render_menu_overlay_for_ui_phase(video_system_t *vs) {
 #endif
 }
 
-static bool window_has_input_focus(SDL_Window *window) {
-    if (window == nullptr) {
-        return false;
-    }
-    return (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0;
-}
-
 // Block display sleep only while a machine is running and the user is in this
 // app. Selector, editor, pause, a stopped debugger, and an unfocused window
 // follow the normal OS idle timer. SDL_Enable/DisableScreenSaver are no-ops
@@ -2528,17 +2559,9 @@ static void update_display_sleep(GS2AppState *state) {
     computer_t *computer = state->computer;
     bool inhibit = false;
     if (state->phase == PHASE_EMULATION && computer != nullptr
-        && computer->execution_mode == EXEC_NORMAL) {
-        video_system_t *vs = computer->video_system;
-        // Activity in the Second Sight monitor should keep the display awake
-        // just as activity in the built-in Apple monitor does.
-        if (vs != nullptr && (window_has_input_focus(vs->window)
-            || window_has_input_focus(vs->additional_window))) {
-            inhibit = true;
-        } else if (computer->debug_window != nullptr && computer->debug_window->window_open
-                   && window_has_input_focus(computer->debug_window->window)) {
-            inhibit = true;
-        }
+        && computer->execution_mode == EXEC_NORMAL
+        && emulator_or_debugger_focused(computer)) {
+        inhibit = true;
     }
     if (inhibit) {
         SDL_DisableScreenSaver();
@@ -2546,6 +2569,32 @@ static void update_display_sleep(GS2AppState *state) {
         SDL_EnableScreenSaver();
     }
 }
+
+#ifndef __EMSCRIPTEN__
+// Freeze the guest while the main window is minimized when the user opted in.
+// A focused debugger or Second Sight monitor window still counts as being in
+// the app.
+static bool should_pause_for_minimize(computer_t *computer) {
+    if (computer == nullptr || !SystemSettings::instance().pause_when_minimized()) {
+        return false;
+    }
+    video_system_t *vs = computer->video_system;
+    if (vs == nullptr || vs->window == nullptr) {
+        return false;
+    }
+    if ((SDL_GetWindowFlags(vs->window) & SDL_WINDOW_MINIMIZED) == 0) {
+        return false;
+    }
+    if (window_has_input_focus(vs->additional_window)) {
+        return false;
+    }
+    if (computer->debug_window != nullptr && computer->debug_window->window_open
+        && window_has_input_focus(computer->debug_window->window)) {
+        return false;
+    }
+    return true;
+}
+#endif
 
 SDL_AppResult SDL_AppIterate(void *appstate) {
     GS2AppState *state = (GS2AppState *)appstate;
@@ -2730,6 +2779,24 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
 
     if (state->phase == PHASE_EMULATION) {
         computer_t *computer = state->computer;
+
+#ifndef __EMSCRIPTEN__
+        // Opt-in: don't run the guest while minimized. SDL_AppIterate otherwise
+        // spins, and a bare pause return would peg a core. Leave execution_mode
+        // alone so a manual pause or debugger step is still there on restore.
+        static bool was_minimize_held = false;
+        if (should_pause_for_minimize(computer)) {
+            was_minimize_held = true;
+            SDL_Delay(16);
+            return SDL_APP_CONTINUE;
+        }
+        if (was_minimize_held) {
+            was_minimize_held = false;
+            if (computer != nullptr) {
+                computer->last_cycle_time = SDL_GetTicksNS();
+            }
+        }
+#endif
 
         osd->update();
 

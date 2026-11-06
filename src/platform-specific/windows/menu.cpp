@@ -21,6 +21,7 @@
 #define IDM_SETTINGS_AUDIO_DECORR 803
 #define IDM_SETTINGS_RMB_ACCEL    804
 #define IDM_FILE_OPEN_CONFIG      805
+#define IDM_SETTINGS_PAUSE_MINIMIZED 806
 #define IDM_HELP_OPEN_DOCS        900
 #define IDM_HELP_DONATE           901
 #define IDM_HELP_CHECK_UPDATES    902
@@ -314,6 +315,9 @@ static void updatePopupState(HMENU popup)
             if (id == IDM_SETTINGS_SLEEP) {
                 setItemCheck(g_settingsPopup,  i, sleeping);
                 setItemEnable(g_settingsPopup, i, running);
+            } else if (id == IDM_SETTINGS_PAUSE_MINIMIZED) {
+                setItemCheck(g_settingsPopup, i, mi->getPauseWhenMinimized());
+                setItemEnable(g_settingsPopup, i, true);
             } else if (id == IDM_SETTINGS_AUDIO_DECORR) {
                 setItemCheck(g_settingsPopup,  i, decorr_on);
                 setItemEnable(g_settingsPopup, i, running);
@@ -474,6 +478,7 @@ static void dispatchCommand(UINT id)
 
     // Settings
     case IDM_SETTINGS_SLEEP:        mi->toggleSleepMode();         return;
+    case IDM_SETTINGS_PAUSE_MINIMIZED: mi->togglePauseWhenMinimized(); return;
     case IDM_SETTINGS_AUDIO_DECORR: mi->toggleAudioDecorrelation(); return;
     case IDM_SETTINGS_RMB_ACCEL:    mi->toggleRightMouseAccel();    return;
 
@@ -676,6 +681,7 @@ static void setupMenus()
     AppendMenuW(g_settingsPopup, MF_STRING | MF_POPUP, reinterpret_cast<UINT_PTR>(g_secondSightMenu), L"Second Sight");
 
     AppendMenuW(g_settingsPopup, MF_STRING, IDM_SETTINGS_SLEEP,        L"Sleep / Busy Wait");
+    AppendMenuW(g_settingsPopup, MF_STRING, IDM_SETTINGS_PAUSE_MINIMIZED, L"Pause when Minimized");
     AppendMenuW(g_settingsPopup, MF_STRING, IDM_SETTINGS_AUDIO_DECORR, L"Mono Helper");
     AppendMenuW(g_settingsPopup, MF_STRING, IDM_SETTINGS_RMB_ACCEL,    L"Right Mouse Button Accelerate");
 

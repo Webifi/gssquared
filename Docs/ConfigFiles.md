@@ -165,6 +165,7 @@ Use only one Second Sight implementation per machine. Firmware and Lattice chip 
 | `"mouse"` | [Apple Mouse III](Cards_AppleMouse.md); `"applemouseiii"` is an alias |
 | `"videx"` | [Videx VideoTerm](Cards_Videx.md) 80-column (II / II+ only, slot 3) |
 | `"mem_expansion"` | Slinky-style RAM expansion (up to 1 MB) |
+| `"ramworks"` | RamWorks 8MB auxiliary RAM (IIe family only, slot 0) |
 | `"prodos_block"` | Deprecated - do not use; prefer `"bazfast3"` |
 | `"prodos_block2"` | Deprecated - do not use; prefer `"bazfast3"` |
 | `"bazfast3"` | SmartPort / hard-disk controller (also accepts `"smartport"` or `"pdblock3"`) |
