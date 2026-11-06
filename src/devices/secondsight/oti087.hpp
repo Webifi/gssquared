@@ -23,6 +23,8 @@
  *   (https://bitsavers.org/components/oakTechnology/OTI-087_Feb1993.pdf);
  *   IBM VGA/XGA Technical Reference May 1992, VGA registers; Brooktree Bt481A
  *   L481A_C pp. 6-8, 14-20 for palette and color formats.
+ *   Wide-latch analysis: https://github.com/Webifi/second-sight-reference,
+ *   docs/15-oak-drawing.md and docs/reference/oti087-registers.md.
  */
 
 #pragma once
@@ -89,8 +91,8 @@ struct ss_video_timing_t {
     // programmed registers. Vertical counts above always include both fields.
     uint32_t oscillator_clock = 25175000;
     bool interlaced = false, sequencer_half_clock = false, board_half_clock = false;
-    // Preserve the reference model's integral clock-period rounding before
-    // multiplying by the raster totals (one unit is 10^-18 seconds).
+    // Round the pixel period to whole attoseconds before multiplying by the
+    // raster totals, consistently with the other video timing calculations.
     uint64_t frame_units() const {
         uint64_t ticks = uint64_t(total_width) * total_height * pixel_divisor;
         return (1000000000000000000ULL / pixel_clock) * ticks;
@@ -218,8 +220,8 @@ public:
     // Horizontal sync, including CRTC skew and Miscellaneous Output polarity.
     int hsync_r() const;
     // Borrow the board's retained SD7:0 byte; the owner outlives this chip.
-    // Scan-test convention: Second Sight reference,
-    // docs/reference/oti087-registers.md, ext $03.
+    // Scan-test convention: second-sight-reference
+    // docs/reference/oti087-registers.md, extended register $03.
     void bind_system_data(const uint8_t &data) { system_data = &data; }
     // Electrical output is CINTn; true here means asserted (low at the pin).
     std::function<void(bool)> cint_callback;
@@ -441,9 +443,10 @@ private:
     // trailing lines (IBM CRTC vertical-total and mode-control registers).
     unsigned vertical_divisor() const { return crtc.sldiv ? 2 : 1; }
     unsigned field_total() const { return (crtc.vert_total + 2) * vertical_divisor(); }
-    // Sequencer 1 bit 0 alone sets the character clock, also in graphics. IBM p2-50
-    // only tells software to use 8 dots there; Sequential's SECOND/MISC/XXX is XX
-    // with 9-dot clocks and a shorter total: 360 pixels at almost the same line rate.
+    // Sequencer 1 bit 0 selects eight or nine dots per character, including
+    // graphics. IBM p. 2-50 recommends eight dots in graphics; a nine-dot
+    // mode can display 360 pixels with a shorter total at a similar line rate,
+    // as in Sequential Systems' SECOND/MISC/XXX disk mode file.
     unsigned char_dots() const { return (sequencer.data[1] & 1) ? 8 : 9; }
     // Interlaced texture rows are woven, but the beam visits a complete
     // even field followed by a complete odd field, including both blanks.
@@ -559,7 +562,9 @@ private:
     void planar_w(uint32_t address, uint8_t data);
     // Apply the Oak packed-pixel write/expansion mode at address using byte data (Oak pp. 42-46).
     void packed_w(uint32_t address, uint8_t data);
-    // IBM VGA write equations applied to the selected saved latch byte; Oak wide-latch use is inferred (docs/15-oak-drawing.md).
+    // Apply IBM VGA write equations to the selected saved latch byte. Oak
+    // wide-latch use is inferred (second-sight-reference
+    // docs/15-oak-drawing.md, "The latch: copying 4 pixels per access").
     uint8_t vga_write_byte(unsigned plane, uint8_t data, uint8_t saved) const {
         auto bit = [](unsigned value, unsigned n) { return (value >> n) & 1; };
         if (gc.plain_write)

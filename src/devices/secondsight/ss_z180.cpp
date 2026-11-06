@@ -168,9 +168,9 @@ void init_secondsight_z180(computer_t *computer, SlotType_t slot) {
 
     // Offer the current card scan while the Apple picture is drawn. Inspection
     // and stepping retain exact fences. This is also where a monitor choice
-    // becomes a cable-sense input. The
-    // firmware samples it when setting a mode, so it cannot rescale an active
-    // mode immediately (ROM_BEEF.asm monitor/mode initialization).
+    // becomes a cable-sense input. The firmware samples it when setting a
+    // mode, so it cannot rescale an active mode immediately (ROM_BEEF.asm
+    // monitor/mode initialization).
     computer->device_frame_dispatcher->registerHandler([st, computer]() {
         // SecondSightDisplay claims stopped Oak state or reuses its previous
         // texture. Stepping may skip rendering and therefore synchronizes here.

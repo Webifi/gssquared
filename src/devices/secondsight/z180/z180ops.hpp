@@ -18,14 +18,17 @@
  *
  *   CF is carry, NF marks subtraction, HF is carry across bit 3 (bit 11 for
  *   16-bit arithmetic), ZF is zero and SF sign. PF/VF share one bit for parity
- *   or signed overflow. XF/YF are undocumented result bits 3/5 retained from
- *   the inherited core. SZ, SZP and SZHV tables produce sign/zero, parity,
+ *   or signed overflow. XF/YF are undocumented flag bits 3/5; their values
+ *   depend on the operation. SZ, SZP
+ *   and SZHV tables produce sign/zero, parity,
  *   and increment/decrement flags from a byte result. A nibble is four bits.
  *
  *   Sources: Zilog UM005004-0918 pp. 55-64 (MMU), 68-85 (interrupts/traps),
  *   173-183 (registers), 211-236 (operations), 251-280 (bus order). The macros
  *   preserve the instruction helper interface; their named arguments are
- *   operands, not independent hardware devices.
+ *   operands, not independent hardware devices. Undocumented flag behavior
+ *   retains the MAME Z180 instruction helpers:
+ *   https://github.com/mamedev/mame/blob/master/src/devices/cpu/z180/z180ops.h
  */
 
 // Keep PC on HALT so the idle engine can repeat its fetch timing; interrupt
@@ -628,7 +631,7 @@ uint8_t Z180::SRL(uint8_t value) {
 // when the bit is clear. Only bit 7 can set sign (UM0050 p. 220).
 #define BIT_TEST(bit, reg) f8 = (f8 & CF) | HF | SZ_BIT[reg & (1 << bit)]
 
-// Set indexed BIT flags like BIT_TEST, but retain the inherited Z80 rule
+// Set indexed BIT flags like BIT_TEST, but use the Z80 rule
 // for undocumented flags: bits 3/5 come from the effective address high byte.
 // Defined flags follow UM0050 p. 220.
 #define BIT_XY(bit, reg) f8 = (f8 & CF) | HF | (SZ_BIT[reg & (1 << bit)] & ~(YF | XF)) | ((ea >> 8) & (YF | XF))
@@ -640,7 +643,8 @@ uint8_t Z180::RES(uint8_t bit, uint8_t value) { return value & ~(1 << bit); }
 uint8_t Z180::SET(uint8_t bit, uint8_t value) { return value | (1 << bit); }
 
 // Copy one byte HL to DE, advance both addresses and decrement BC.
-// Parity/overflow means more bytes remain; inherited X/Y flags use A+byte (UM0050 p. 225).
+// Parity/overflow means more bytes remain. Undocumented X and Y take bits
+// 3 and 1 of A+byte respectively (count behavior: UM0050 p. 225).
 #define LDI                                                                                                            \
     {                                                                                                                  \
         uint8_t io = RM(hl16);                                                                                         \
@@ -659,7 +663,7 @@ uint8_t Z180::SET(uint8_t bit, uint8_t value) { return value | (1 << bit); }
 
 // Compare A with memory at HL, advance HL and decrement BC. Preserve
 // carry; parity/overflow means count nonzero. The half-borrow correction
-// feeds only the inherited undocumented X/Y flags (UM0050 p. 226).
+// feeds only the undocumented X/Y flags (UM0050 p. 226).
 #define CPI                                                                                                            \
     {                                                                                                                  \
         uint8_t val = RM(hl16);                                                                                        \
@@ -678,8 +682,9 @@ uint8_t Z180::SET(uint8_t bit, uint8_t value) { return value | (1 << bit); }
     }
 
 // Read port BC into memory at HL; decrement B and move HL forward.
-// The parity tables retain inherited block-I/O flag behavior.
-// Transfer/count rules: UM0050 pp. 232-234.
+// This core sets X/Y from B bits 3/5 and N from the byte's high bit.
+// H/C use the carry or borrow of C+byte+1 or C+byte-1; parity uses the
+// tables in z180tbl.hpp. Transfer/count rules: UM0050 pp. 232-234.
 #define INI                                                                                                            \
     {                                                                                                                  \
         uint8_t io = IN(bc16);                                                                                         \
@@ -696,8 +701,9 @@ uint8_t Z180::SET(uint8_t bit, uint8_t value) { return value | (1 << bit); }
     }
 
 // Read memory at HL, decrement B, then write to port BC and move HL forward.
-// The parity tables retain inherited block-I/O flag behavior.
-// Transfer/count rules: UM0050 pp. 232-234.
+// This core sets X/Y from B bits 3/5 and N from the byte's high bit.
+// H/C use the carry or borrow of C+byte+1 or C+byte-1; parity uses the
+// tables in z180tbl.hpp. Transfer/count rules: UM0050 pp. 232-234.
 #define OUTI                                                                                                           \
     {                                                                                                                  \
         uint8_t io = RM(hl16);                                                                                         \
@@ -715,7 +721,8 @@ uint8_t Z180::SET(uint8_t bit, uint8_t value) { return value | (1 << bit); }
 
 // Apply the register half of LDD after copied byte io reaches memory: move
 // HL/DE backward, decrement BC, preserve sign/zero/carry and report BC nonzero
-// in parity/overflow. Retain inherited undocumented flags (UM0050 p. 225).
+// in parity/overflow. X and Y take bits 3 and 1 of A+byte respectively
+// (count behavior: UM0050 p. 225).
 inline void Z180::ldd_registers(uint8_t io) {
     f8 &= SF | ZF | CF;
     if ((a8 + io) & 0x02)
@@ -756,8 +763,9 @@ inline void Z180::ldd_registers(uint8_t io) {
     }
 
 // Read port BC into memory at HL; decrement B and move HL backward.
-// The parity tables retain inherited block-I/O flag behavior.
-// Transfer/count rules: UM0050 pp. 232-234.
+// This core sets X/Y from B bits 3/5 and N from the byte's high bit.
+// H/C use the carry or borrow of C+byte+1 or C+byte-1; parity uses the
+// tables in z180tbl.hpp. Transfer/count rules: UM0050 pp. 232-234.
 #define IND                                                                                                            \
     {                                                                                                                  \
         uint8_t io = IN(bc16);                                                                                         \
@@ -774,8 +782,9 @@ inline void Z180::ldd_registers(uint8_t io) {
     }
 
 // Read memory at HL, decrement B, then write to port BC and move HL backward.
-// The parity tables retain inherited block-I/O flag behavior.
-// Transfer/count rules: UM0050 pp. 232-234.
+// This core sets X/Y from B bits 3/5 and N from the byte's high bit.
+// H/C use the carry or borrow of C+byte+1 or C+byte-1; parity uses the
+// tables in z180tbl.hpp. Transfer/count rules: UM0050 pp. 232-234.
 #define OUTD                                                                                                           \
     {                                                                                                                  \
         uint8_t io = RM(hl16);                                                                                         \

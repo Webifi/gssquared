@@ -1,6 +1,6 @@
 # Build the Second Sight clock/bus contract check from main.cpp and the production
-# card's test-only exact-stop library. CTest invokes it; assertions determine success.
-# This file describes build wiring, not a hardware rule.
+# card's test library, which can stop in the middle of an instruction.
+# CTest invokes it; assertions determine success.
 add_executable(ssclocktest main.cpp)
 
 target_link_libraries(ssclocktest PRIVATE

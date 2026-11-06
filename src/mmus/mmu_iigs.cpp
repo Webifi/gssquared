@@ -50,7 +50,8 @@ void MMU_IIgs::advance_megaii_hold(uint64_t ticks) {
     auto *gs_clock = (NClockIIgs *)clock;
     // The retained request is physically presented on every occupied PH0
     // period. RAM and selected write strobes remain live while the 65816
-    // waits; subsequent CPU writes cannot occur (TN68 pp.3-4; FPI pp.22-24).
+    // waits; subsequent CPU writes cannot occur (Apple IIgs Technical Note
+    // 68, pp. 3-4; Cortland Custom ICs, 14 February 1986, pp. 22-24).
     while (held_write_active && held_write_fall && held_write_fall <= ticks) {
         gs_clock->advance_slot_hold(held_write_fall);
         if (held_write_destination) *held_write_destination = held_write_data;

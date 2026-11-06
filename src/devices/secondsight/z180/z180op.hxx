@@ -23,8 +23,8 @@
  *   subtraction and carry. PHI is the processor clock; a T-state is one PHI.
  *   The decoder supplies base timing; helpers add conditional/repeat timing.
  *   Empty self-load handlers still consume clocks. A trap is the processor's
- *   entry to address zero for an undefined instruction. The inherited Z80
- *   helpers for unsupported encodings remain here, but the Z180 decoder
+ *   entry to address zero for an undefined instruction. Z80 helpers for
+ *   unsupported encodings remain here, but the Z180 decoder
  *   rejects them before execution.
  *
  *   Sources: Zilog UM005004-0918 pp. 173-183 for registers/addressing,
@@ -1091,7 +1091,7 @@ OP(op, f1) {
 OP(op, f2) {
     JP_COND(!(f8 & SF));
 }
-// Clear both interrupt enables (UM0050 pp. 68-69, 235). The inherited core
+// Clear both interrupt enables (UM0050 pp. 68-69, 235). This implementation
 // also delays its next interrupt check through the following instruction.
 OP(op, f3) {
     IFF1 = IFF2 = 0;

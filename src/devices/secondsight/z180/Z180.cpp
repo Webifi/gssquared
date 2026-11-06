@@ -32,8 +32,13 @@
  *   pp. 55-64 for the MMU, pp. 65-115 for interrupts, refresh and DMA,
  *   pp. 116-164 for serial ports and timers, and pp. 251-280 for instruction
  *   bus sequences: https://www.zilog.com/docs/z180/um0050.pdf.
- *   The test continuation journal and fast paths are emulator mechanisms, not
- *   extra processor registers. K/N revision differences use Zilog TN0053
+ *   The scheduler grants a bounded interval of CPU time, ending at a board
+ *   event or another execution deadline. Fast paths combine bus phases only
+ *   when the interval and input state allow it. Direct reads use board-provided
+ *   memory pointers only where reads have no device side effects. Test replay
+ *   records completed accesses so restarting a handler does not repeat them.
+ *   These are emulator mechanisms, not extra processor registers. K/N revision
+ *   differences use Zilog TN0053
  *   and the Z8S180 data sheets cited at the affected operation.
  */
 
@@ -75,8 +80,11 @@ template <class... Args> [[noreturn]] static void z180_error(const char *format,
 // F is the arithmetic-status byte (UM0050 pp. 177-179). S is the sign bit,
 // Z means zero, H means a carry/borrow across bit 3, N marks subtraction,
 // and C means carry/borrow across bit 7. P/V is parity for logical operations
-// or signed overflow for arithmetic. X and Y copy result bits 3 and 5; these
-// undocumented bits retain the inherited core's behavior.
+// or signed overflow for arithmetic. Zilog does not document flag bits 3 and 5.
+// For ordinary arithmetic this core copies result bits 3 and 5 into X and Y;
+// other instructions use different values. These rules came from MAME's Z180
+// core, z180.cpp flag-table initialization:
+// https://github.com/mamedev/mame/blob/master/src/devices/cpu/z180/z180.cpp
 #define CF 0x01
 #define NF 0x02
 #define PF 0x04
@@ -751,7 +759,7 @@ void Z180::z180_writecontrol(uint32_t port, uint8_t data) {
     z180_internal_port_write(port & (0x3f), data);
 }
 
-// Apply register-specific masks and side effects, including DMA admission,
+// Apply register-specific masks and side effects, including DMA requests,
 // clock changes and MMU mapping (Zilog UM0050, internal I/O registers).
 // port is the six-bit internal offset; data is the sampled CPU bus byte.
 // Use the map above the read decoder. Register writes can change clocks and
@@ -1398,11 +1406,12 @@ void Z180::execute_set_input(int irqline, int state) {
 
 // Z180 machine-cycle execution, UM0050 Tables 51-52 and Figs 9-18,32-49.
 // Instruction handlers remain the only implementation of ISA arithmetic.
-// Production handlers stay on their worker stack. Only the exact-stop fixture
-// replays completed reads; completed writes and peripheral reads never repeat.
+// Production handlers stay on their worker stack. Test execution can suspend
+// at a clock edge and replay completed reads; completed writes and peripheral
+// reads never repeat.
 
-// Rebuild certified logical read pages after MMU or board-overlay changes;
-// uncertified pages continue through side-effecting memory callbacks.
+// Rebuild direct-read pages after MMU or board-overlay changes. Pages without
+// board-provided pointers continue through the memory callbacks.
 void Z180::cycle_update_direct_reads() {
     instruction_fast = false;
     if (!direct_read_bus) {
@@ -1426,7 +1435,7 @@ void Z180::cycle_save_state() {
     std::copy(std::begin(c), std::end(c), instruction_start.control);
 }
 
-// Restore the instruction-entry registers while retaining the bus journal;
+// Restore the instruction-entry registers while retaining recorded bus accesses;
 // replay consumes recorded reads and must not repeat completed writes.
 void Z180::cycle_restore_state() {
     Z180Register *r[] = {&PC, &SP, &AF, &BC, &DE, &HL, &IX, &IY, &AF2, &BC2, &DE2, &HL2};
@@ -1456,8 +1465,7 @@ void Z180::cycle_reset() {
     trapping = third_trap = false;
 #ifdef GS2_SS_TESTING
     history_count = cursor = 0;
-    // The reference continuation is dead after reset. Clear its test-only
-    // records so a discarded handler tail cannot affect checkpoint comparisons.
+    // Discard the test continuation and its recorded bus accesses on reset.
     instruction_start = {};
     std::fill(std::begin(history), std::end(history), cycle_record{});
     reti_notified = trap_started = interrupt_started = false;
@@ -1520,8 +1528,8 @@ inline void Z180::cycle_emit(uint8_t edge) {
 void Z180::cycle_suspend() {
     if (reset_cancelled) return;
     if (timer_limit <= half_phi) {
-        // Only the timer stop ended: the phase engine clocks the timeout
-        // edge, then the next instruction boundary may compose again.
+        // Only the timer deadline was reached. The phase engine clocks the
+        // timeout edge; the next instruction can then use the fast path.
         timer_limit = UINT64_MAX;
         fast_irq_valid = false;
         instruction_fast = false;
@@ -1538,8 +1546,8 @@ void Z180::cycle_suspend() {
             board_edge();
             fast_irq_valid = false;
             instruction_fast = false;
-            // Only the fixed grant ended. The external horizon still proves
-            // that no other board or serial event occurred in this interval.
+            // Only the current time slice ended. No other board or serial event
+            // was scheduled within it.
             // The callback may have scheduled the board's next edge.
             if (!yield_requested && scheduler_limit > half_phi) {
                 icount = int(std::min(scheduler_limit, board_edge_at) - half_phi);
@@ -1549,9 +1557,8 @@ void Z180::cycle_suspend() {
         if (refill_budget(true) || reset_cancelled)
             return;
     }
-    // Only the reference fixtures return in the middle of an ISA handler.
-    // The production card scheduler stays on this stack until it can grant
-    // another half-PHI; it never returns an exhausted active-instruction grant.
+    // Test execution can suspend in the middle of an instruction handler.
+    // Production execution stays on this stack until more CPU time is available.
 #ifdef GS2_SS_TESTING
     throw cycle_yield{};
 #else
@@ -1559,7 +1566,7 @@ void Z180::cycle_suspend() {
 #endif
 }
 
-// Retain the completed bus state for an exact observation after an admitted cycle.
+// Retain the completed bus state so an observer can inspect it.
 void Z180::cycle_completed_record(cycle_kind kind, uint32_t address, uint8_t data, bool no_arbitration) {
     bool const internal = kind == cycle_kind::internal;
     cycle_initialize(cycle_owner::cpu, kind, internal ? 0 : MMU_REMAP_ADDR(address), data, no_arbitration);
@@ -1613,9 +1620,9 @@ inline void Z180::advance_dividers(unsigned phi) {
         sync_timers();
 }
 
-// Find the next timer edge that bounds a composed execution span. Production
-// uses its cached timeout; the reference derives observable edges from its
-// current divider state. UINT64_MAX means no timer stop is needed.
+// Find the next timer edge that limits fast execution. Production uses its
+// cached timeout; test replay derives observable edges from divider state.
+// UINT64_MAX means no timer stop is needed.
 uint64_t Z180::timer_horizon() const {
     if (!cycle_reference)
         return timer_deadline;
@@ -1643,8 +1650,8 @@ uint64_t Z180::timer_horizon() const {
     return half_phi + 2 * phi - phi_half;
 }
 
-// Limit the current grant so a composed opcode fetch cannot cross a timer
-// change. False requests individual bus phases when the next edge is too close.
+// Limit CPU time so a fast opcode fetch cannot cross a timer change. Return
+// false to use individual bus phases when the next edge is too close.
 bool Z180::admit_timers() {
     if (timer_limit != UINT64_MAX) {
         // Replace the earlier stop; a TCR or reload write may have moved it.
@@ -1657,9 +1664,9 @@ bool Z180::admit_timers() {
     uint64_t const horizon = timer_horizon();
     if (horizon == UINT64_MAX)
         return true;
-    // Each composed machine cycle samples inputs before its end, so a span
-    // that ends at the timeout edge sees only the earlier counter state. The
-    // admitted opcode fetch, with its DCNTL waits, must fit before that edge.
+    // Each machine cycle samples inputs before it ends, so a fast span ending
+    // at the timeout sees the earlier counter state. The opcode fetch and its
+    // DCNTL waits must fit before that edge.
     if (horizon < half_phi + 8 + 2 * memory_wait_states())
         return false;
     if (horizon - half_phi < uint64_t(icount)) {
@@ -1698,7 +1705,7 @@ bool Z180::cycle_advance(unsigned ticks) {
         // No callback occurs inside this span. FRC/PRT already implement
         // their divider and reload recurrences arithmetically; update them
         // once at the next externally observable edge or scheduler boundary.
-        // Keep the one-half-PHI implementation below as the reference.
+        // Test execution can instead advance one half-PHI at a time below.
         while (advance_left) {
             if (icount <= 0) {
                 cycle_suspend();
@@ -1735,8 +1742,8 @@ bool Z180::cycle_advance(unsigned ticks) {
     return true;
 }
 
-// A step wholly inside the current grant cannot meet the scheduler. Keep the
-// resumable path for reference execution, a partial step or a cancelled grant.
+// A step wholly inside the available time needs no scheduler callback. Use
+// the resumable path for test replay, a partial step or a cancelled slice.
 inline bool Z180::cycle_advance_granted(unsigned ticks) {
     if (!cycle_reference && !advance_left && !reset_cancelled && !yield_requested &&
         icount >= int(ticks)) {
@@ -1807,7 +1814,7 @@ inline void Z180::cycle_sample_memory() {
         cycle.data = read_memory(cycle.address);
 }
 
-// Sample a fetched opcode once; the test reference can replay its recorded value.
+// Sample a fetched opcode once; test execution can replay the recorded value.
 void Z180::cycle_sample_opcode() {
     if (cycle.kind == cycle_kind::fetch || cycle.kind == cycle_kind::halt || cycle.kind == cycle_kind::nmi) {
         cycle_sample_memory();
@@ -1824,7 +1831,7 @@ void Z180::cycle_sample_opcode() {
 }
 
 // Perform the read/write callback at the bus data edge, not at instruction
-// retirement. The test journal keeps completed effects across a test yield.
+// retirement. Test replay records completed effects across a suspension.
 void Z180::cycle_sample_data() {
     if (!cycle.sampled) {
         // Set the guard before a handler that can abort this timeslice.
@@ -1985,14 +1992,13 @@ void Z180::cycle_run() {
 }
 
 // Record the decoded family and opcode for the shared Ti timing table.
-// The admission bound covers the remaining nominal instruction clocks.
+// Check whether the remaining nominal instruction clocks fit in the available time.
 void Z180::cycle_decode(unsigned family_arg, unsigned opcode_arg) {
     family = family_arg;
     opcode = opcode_arg;
-    // Admission is made once when the opcode is known, from its maximum
-    // nominal duration and the current external-event horizon. Prefixes
-    // admit at their final opcode. I/O and pin changes revoke the proof;
-    // an address-dependent external wait can still require a continuation.
+    // Once the final opcode is known, compare its maximum nominal duration
+    // with the time remaining before the next event. I/O and pin changes
+    // invalidate the fast path; an external wait may still require a pause.
     unsigned const bound = cc[family_arg][opcode_arg] + cc[Z180_TABLE_ex][opcode_arg];
     instruction_whole = instruction_fast && !cycle_observer && cc[family_arg][opcode_arg] &&
                         icount >= int(2 * (bound > nominal ? bound - nominal : 0));
@@ -2009,7 +2015,7 @@ unsigned Z180::cycle_prelude_reference(cycle_kind kind) const {
     return z180_prelude_rule(family, opcode, bus_number, kind == cycle_kind::write, !(omcr & 0x80));
 }
 
-// Enter the fully observable bus path when a direct access cannot be certified.
+// Run each bus phase when a direct access cannot use the fast path.
 uint8_t Z180::cycle_access_slow(cycle_kind kind, uint32_t address, uint8_t data, unsigned pre) {
     for (unsigned n = 0; n < pre; ++n)
         cycle_transaction(cycle_kind::internal, 0, 0, family == Z180_TABLE_op && opcode == 0x10);
@@ -2027,7 +2033,7 @@ void Z180::cycle_whole_internal(unsigned count, bool no_arbitration) {
 #endif
     // These Ti boundaries have identical sampled inputs and no requester.
     // The exact divider recurrence covers the span. Test builds record each
-    // Ti clock in case the reference later yields.
+    // Ti clock in case test execution later suspends.
     if (!fast_irq_valid)
         cycle_sample_stable_inputs();
     cycle_clock_span(count);
@@ -2058,9 +2064,8 @@ uint8_t Z180::cycle_mapped_access(cycle_kind kind, uint32_t address, uint32_t ph
 
 // Restore pending arbitration before resuming an instruction access.
 void Z180::cycle_resume_admission(bool interrupt) {
-    // The pending cycle and any test-reference replay are finished. Re-prove
-    // the event horizon for the instruction's remainder instead of keeping it slow
-    // solely because an earlier scheduler grant ended. Invalidate, but do
+    // The pending cycle and any test replay are finished. Check again whether
+    // the rest of the instruction can run before the next event. Invalidate, but do
     // not take a new pin sample here: a late IRQ after T2 must wait for the
     // next real Ti/memory cycle, if this instruction has one at all.
     if (icount >= 2 && !cycle_reference && !cycle_observer && !trapping && (interrupt || instruction_interrupt < 0) &&
@@ -2073,7 +2078,7 @@ void Z180::cycle_resume_admission(bool interrupt) {
     }
 }
 
-// Perform a port cycle of an admitted instruction with the begin, edges and
+// Perform a port cycle of a fast instruction with the begin, edges and
 // callbacks of cycle_transaction, without its test replay and arbitration layers.
 // Fast execution has no DMA, refresh or BUSREQ requester at this boundary.
 uint8_t Z180::cycle_whole_io(cycle_kind kind, uint32_t port, uint8_t data, unsigned pre) {
@@ -2086,7 +2091,7 @@ uint8_t Z180::cycle_whole_io(cycle_kind kind, uint32_t port, uint8_t data, unsig
     return cycle.data;
 }
 
-// Perform one bus operation; the test reference can replay a completed access
+// Perform one bus operation; test execution can replay a completed access
 // without repeating device effects. address is logical for CPU memory (ports
 // remain 16-bit); data is the outgoing byte and the return is the sampled byte.
 // no_arbitration suppresses a bus hand-off where instruction timing requires it.
@@ -2109,16 +2114,16 @@ uint8_t Z180::cycle_transaction(cycle_kind kind, uint32_t address, uint8_t data,
     }
     if (!cycle.active || cycle.owner != cycle_owner::cpu || cycle.kind == cycle_kind::release) {
         // The instruction's stable-input path has no DMA/refresh requester.
-        // Every I/O or external input mutation invalidates that proof. Keep
-        // explicit arbitration for observed edges or a test-reference replay.
+        // I/O or external input changes invalidate that condition. Arbitrate
+        // explicitly for observed edges or test replay.
         if (!instruction_fast || cycle_observer || sampled_bus_request || refresh_pending)
             cycle_arbitrate();
         if (icount <= 0) {
             cycle_suspend();
             if (reset_cancelled) { cycle.active = false; return 0; }
         }
-        // A bus grant or a scheduler meeting may have ended just before this
-        // boundary. If the proof holds again, this access already composes.
+        // Bus ownership or a scheduler callback may have ended at this boundary.
+        // If the fast-path conditions hold again, run the complete access.
         if (kind <= cycle_kind::write && !trapping && !cycle_observer) {
             if (!instruction_fast) {
                 cycle_resume_admission();
@@ -2186,7 +2191,7 @@ void Z180::cycle_reti() {
     }
 }
 
-// Check enabled/requested DMA admission without consuming the request edge.
+// Check whether DMA is enabled and requested without consuming the request edge.
 // Zilog UM0050 pp. 95-109 distinguishes edge and level request modes.
 inline bool Z180::cycle_dma_ready(unsigned ch) const { return dma_request(ch, sampled_iol, dma_edge_sampled[ch]); }
 
@@ -2195,7 +2200,7 @@ inline bool Z180::dma_idle() const {
         return true;
     if (dma_channel != 0xff || dma_continue != 0xff)
         return false;
-    // Composed spans neither arbitrate nor resample DREQ. They are exact while
+    // Fast spans neither arbitrate nor resample DREQ. They are safe while
     // no enabled channel requests on the last sample or on the present pins:
     // pins change only at a grant boundary, ASCI flags at serial deadlines or
     // through I/O cycles, and each of those ends the span.
@@ -2467,7 +2472,7 @@ int Z180::cycle_choose_interrupt() {
     return irq == 1 || IFF1 ? irq : -1;
 }
 
-// Run one Ti of an interrupt sequence, composed while the sequence is admitted.
+// Run one Ti of an interrupt sequence, using the fast path when it fits.
 void Z180::cycle_interrupt_internal() {
     if (instruction_fast && !cycle_observer && !cycle.active && cursor == history_count && icount >= 2 &&
         !(rcr & 0x80))
@@ -2528,8 +2533,8 @@ int Z180::cycle_interrupt() {
 
 // Run instructions, low-power states and DMA within the supplied half-PHI
 // budget; meet the board before crossing any external deadline.
-// The worker keeps the instruction handler on its stack across bus meetings.
-// Only test execution retains a journal; production handlers never restart.
+// The worker keeps the instruction handler on its stack across bus callbacks.
+// Test execution records accesses for replay; production handlers never restart.
 // Each iteration retires an instruction, advances an idle/bus cycle, or leaves
 // when the half-PHI budget is exhausted. No external deadline may be crossed.
 void Z180::execute_machine_cycles() {
@@ -2542,7 +2547,7 @@ void Z180::execute_machine_cycles() {
     instruction_fast = false;
     timer_limit = UINT64_MAX;
     while (icount > 0) {
-        // A bounded board grant can end here without suspending an ISA handler.
+        // A board time slice can end here without suspending an instruction handler.
         // An unfinished instruction still obeys the hard half-PHI budget.
         if (!instruction_active && half_phi >= run_soft_target)
             break;
@@ -2600,14 +2605,12 @@ void Z180::execute_machine_cycles() {
                     // without passing through the CPU's external-input API.
                     instruction_fast = false;
                 }
-                // The scheduler budget is the horizon for external pin/timer
-                // events. Keep the handler running once through that horizon;
-                // cycle_run checks the remaining budget before each unrolled
-                // MC. A deadline services the board on this stack before the
-                // handler can perform any later bus operation.
+                // The CPU time budget ends at the next external pin or timer event.
+                // cycle_run checks it before each machine cycle and services
+                // the board before the handler can perform a later access.
                 if (instruction_fast && !cycle_observer) {
                     // No callback or timed source has changed these inputs
-                    // since the last admitted instruction. Only the budget and
+                    // since the previous fast instruction. Only the budget and
                     // instruction-boundary interrupt decision are new.
                     instruction_fast = instruction_interrupt < 0 && icount >= int(6 + 2 * memory_wait_states());
                 } else {
@@ -2845,8 +2848,8 @@ bool Z180::refill_budget(bool in_handler) {
         icount = 0;
         return false;
     }
-    // A future returned horizon admits the callback's input changes. An
-    // explicit zero-length horizon above remains the scheduler's exit rule.
+    // A future deadline includes the callback's input changes. A zero-length
+    // interval above tells the scheduler to exit.
     yield_requested = false;
     auto next = std::min({asci[0].next_event(), asci[1].next_event(), csio.next_event()});
     if (!next.is_never()) {
@@ -2879,8 +2882,8 @@ bool Z180::schedule_board_edge(uint64_t half_deadline) {
     return true;
 }
 #ifdef GS2_SS_TESTING
-// Exact partial-instruction stepping belongs to the reference fixture. The
-// production card owns execution and requests stops at instruction boundaries.
+// Test execution can step through part of an instruction. The production
+// card owns execution and requests stops at instruction boundaries.
 void Z180::step() {
     uint64_t const goal = retired + 1, stop = half_phi + 2'000'000;
     do {
@@ -2899,7 +2902,7 @@ void Z180::set_input(Input input, bool asserted) {
                              INPUT_LINE_NMI,       Z180_INPUT_LINE_DREQ0, Z180_INPUT_LINE_DREQ1};
     execute_set_input(lines[unsigned(input)], asserted);
 }
-// Export architectural registers separately from test-reference journal state.
+// Export CPU registers separately from the test replay records.
 Z180::State Z180::get_state() const {
     return {PC.w.l,
             SP.w.l,
@@ -2956,7 +2959,7 @@ void Z180::set_state(const State &s) {
 
 #include <istream>
 #include <ostream>
-// Serialize CPU/peripheral state and test-reference records for same-build checkpoints.
+// Serialize CPU/peripheral state and test replay records for same-build saves.
 // Callbacks and host pointers belong to the embedding board, not the stream.
 // Return 0 on success or 1 on stream failure. Field order and native scalar
 // representation form a same-build format, not a portable hardware image.
@@ -3032,7 +3035,7 @@ int Z180::save(std::ostream &stream) {
     stream.write(reinterpret_cast<const char *>(&iol), sizeof(iol));
     stream.write(reinterpret_cast<const char *>(&ioltemp), sizeof(ioltemp));
     stream.write(reinterpret_cast<const char *>(&mmu), sizeof(mmu));
-    // Preserve cycle state; test fixtures also save their replay journal.
+    // Preserve cycle state; test execution also saves its replay records.
     // Production does not restore a suspended instruction handler.
     stream.write(reinterpret_cast<const char *>(&cycle_reference), sizeof(cycle_reference));
     stream.write(reinterpret_cast<const char *>(&cycle_executing), sizeof(cycle_executing));
@@ -3277,7 +3280,7 @@ int Z180::load(std::istream &stream) {
     stream.read(reinterpret_cast<char *>(&ioltemp), sizeof(ioltemp));
     stream.read(reinterpret_cast<char *>(&mmu), sizeof(mmu));
 #ifdef GS2_SS_TESTING
-    // Preserve cycle state; test fixtures also save their replay journal.
+    // Preserve cycle state; test execution also saves its replay records.
     // Production does not restore a suspended instruction handler.
     stream.read(reinterpret_cast<char *>(&cycle_reference), sizeof(cycle_reference));
 #else
@@ -3453,7 +3456,7 @@ int Z180::load(std::istream &stream) {
     return stream ? 0 : 1;
 }
 
-// Compose established idle cycles only. The scheduler grant is already bounded
+// Combine established idle cycles only. The available time is already bounded
 // by every external and serial event. Timers/refresh that can alter a sampled
 // input stay on the phase engine. No bus callback or observer is bypassed.
 // Advance HALT clocks only to the next interrupt/peripheral/bus event.

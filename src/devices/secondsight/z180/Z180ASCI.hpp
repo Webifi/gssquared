@@ -20,7 +20,9 @@
  *   Each channel belongs to Z180 and runs only on its execution thread.
  *   Second Sight uses K silicon, with one receive byte; N silicon has four.
  *   Sources: Zilog UM005004-0918 pp. 116-146 (ASCI) and Zilog TN0053 p. 3
- *   (K/N receive buffering and error recovery).
+ *   (K/N receive buffering and error recovery). The receive-register write
+ *   convention comes from MAME (rdr_w):
+ *   https://github.com/mamedev/mame/blob/master/src/devices/cpu/z180/z180asci.cpp
  */
 
 #pragma once
@@ -67,7 +69,6 @@ public:
         transmit_timer.now = time;
     }
     // Synchronous output-voltage callbacks; RTS changes the board ROM map.
-    // The CPU owns the time reader and checks checkpoints on this same thread.
     std::function<void(bool)> txa_handler, rts_handler, cka_handler;
     std::function<Z180Time()> now;
     bool side_effects_disabled = false;
@@ -96,8 +97,9 @@ public:
     void stat_w(uint8_t data);
     // Queue byte data for transmission; the holding register becomes empty only when moved to the shifter (p. 121).
     void tdr_w(uint8_t data);
-    // Retain the inherited model's receive-register write behavior: queue data
-    // only when no byte is ready. This is a model behavior, not a documented serial input path.
+    // Queue a receive-register write only when no byte is ready.
+    // This write behavior comes from the MAME Z180 core; it is not a
+    // documented serial input path.
     void rdr_w(uint8_t data);
     // Store writable extension bits from data and preserve break-detect status (UM0050 pp. 122-124).
     void asext_w(uint8_t data);
@@ -122,7 +124,7 @@ public:
         return ((asci_stat & 3) == 3) || ((asci_stat & 8) && rx);
     }
 #ifdef GS2_SS_TESTING
-    // ASCI IRQ is level-derived; the reference fixture's acknowledge has no effect.
+    // ASCI IRQ is level-derived, so acknowledging it here has no effect.
     void clear_interrupt() {}
 #endif
     // Return receive-ready when receive is true, otherwise transmit-ready; no byte is consumed (UM0050 p. 120).
@@ -148,7 +150,9 @@ private:
     enum SerialState { STATE_START, STATE_DATA, STATE_WAIT, STATE_BREAK };
     uint32_t clock_rate = 18'000'000;
     unsigned id;
-    bool ext = true; // N/SL1919 enhancements; false for the card's K/SL1960.
+    // Enable the later N-revision (SL1919) serial features. The card uses
+    // K-revision (SL1960) silicon, which lacks them (Zilog TN0053 pp. 1-3).
+    bool ext = true;
     Z180Time bit_rate = Z180Time::never, sample_rate = Z180Time::never;
     Z180Timer receive_timer, transmit_timer;
     // Emit the next framed bit, or enter idle when no byte remains (UM0050 pp. 121, 140-141).

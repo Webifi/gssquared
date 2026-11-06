@@ -1,6 +1,6 @@
 # Second Sight
 
-Second Sight is an Apple IIgs video card with its own monitor output. GSSquared has two versions of the card:
+Second Sight is an Apple IIgs video card with its own monitor output. GSSquared offers two implementations:
 
 * **Second Sight** is the simulated card. It provides a VGA output path and an optional text mode that uses the card's font.
 * **Second Sight (with Z180)** runs the card's firmware on its Z180 processor, with the Oak video chip, Bt481 DAC and capture logic. Its firmware handles Apple II video modes and programs written for Second Sight.
@@ -30,7 +30,7 @@ card = "second_sight_z180"
 
 Use `card = "second_sight"` for the simulated card. Monitor and screen choices belong to the Display menu and app settings.
 
-## Display choices for the real card
+## Display choices for Second Sight with Z180
 
 **Display → Second Sight → Monitor → VGA** is the default. **AppleColor RGB** selects the AppleColor RGB monitor. The firmware uses this choice to select its supported modes; some VGA modes are unavailable on RGB. The ROM reads the monitor sense at each card mode change, so the choice takes effect then. **Machine → Restart** shows the change at once.
 
@@ -44,7 +44,7 @@ These items are grayed out without **Second Sight (with Z180)**. Monitor type an
 
 For the simulated card, **Display → Second Sight Text** renders fullscreen Apple II 40- or 80-column text through the card's VGA path (an Apple-ified font from the Second Sight ROM). Graphics modes and the card's own VGA modes are unchanged.
 
-The menu item is grayed out without the simulated card. The real card renders text through its firmware. See [Displays](Displays.md).
+The menu item is grayed out without the simulated card. The Z180 implementation renders text through its firmware. See [Displays](Displays.md).
 
 ## Firmware and Lattice chip options
 
@@ -76,7 +76,8 @@ With fonts 0, 1 or 2, it uses `$0F000–$0F2FF`, as firmware 1.4 does. The origi
 its pending mode change is applied, so an interrupt during the main loop cannot
 leave the previous mode active.
 AppleColor RGB double hires (mode `$FA`) uses 260 lines at 59.9 Hz in these
-builds, correcting the 222-line, 70.2 Hz timing (firmware fault E30).
+builds, correcting the original 222-line, 70.2 Hz timing
+([firmware fault E30](https://github.com/Webifi/second-sight-reference/blob/master/docs/reference/errata.md#e30-double-hires-on-the-applecolor-rgb-monitor-runs-at-70-hz)).
 
 **Settings → Second Sight → INT0 pull-up** selects **None (stock card)**, the
 default, or **Added (card modification)**. The card wires the VGA chip's

@@ -61,13 +61,13 @@ The menu item is grayed out when no Second Sight card is present. The setting is
 
 ## Second Sight with Z180
 
-The real card has its own monitor, separate from the IIgs display. **Display → Second Sight → Monitor → VGA** (default) and **AppleColor RGB** select its monitor type. The ROM reads the monitor sense at each card mode change and offers different modes for each monitor. The choice takes effect at the next card mode change; **Machine → Restart** shows it at once.
+Second Sight with Z180 has its own monitor output, separate from the IIgs display. **Display → Second Sight → Monitor → VGA** (default) and **AppleColor RGB** select its monitor type. The ROM reads the monitor sense at each card mode change and offers different modes for each monitor. The choice takes effect at the next card mode change; **Machine → Restart** shows it at once.
 
 **Display → Second Sight → View → IIgs monitor**, **Second Sight monitor**, and **Both** select one or both outputs. With one selected, the main window and full screen show that monitor. With both selected, the native app uses a separate card window; the browser shows both pictures side by side. **F11** cycles these three views. Both is the default.
 
 The IIgs renderer runs normally every frame, independently of the card. The card monitor shows only its own VRAM and DAC output, including any IIgs picture captured and mirrored by its firmware. Hiding either monitor does not stop it. Closing the separate card window returns to the IIgs view.
 
-These options are grayed out when the machine has no **Second Sight (with Z180)**. They are remembered in app settings, just like Second Sight Text. Browser settings last until the page is reloaded. See [Second Sight](Cards_SecondSight.md) for card selection and the required ROM.
+These options are grayed out when the machine has no **Second Sight (with Z180)**. They are remembered in app settings, just like Second Sight Text. Browser settings last until the page is reloaded. See [Second Sight](Cards_SecondSight.md) for card selection and the included firmware.
 
 The card monitor includes the scan's border in its programmed overscan color, at the same scale as the picture. AppleColor RGB uses the same visible time and line window as GS2's IIgs SHR display. Standard VGA and VESA modes use their standard monitor windows. Other modes use their unblanked area, like a multisync monitor sized to that signal. Both monitors use GS2's aspect fitting. The browser reserves space above them for its menu bar.
 

@@ -41,6 +41,9 @@
  *   https://github.com/jawaidbazyar2/secondsight . Zilog UM005004-0918 pp. 16-30
  *   and 95-113 describe processor bus ownership and DMA. Board grant lengths
  *   below are scheduling choices; those Zilog pages do not specify card delays.
+ *   Board analysis: https://github.com/Webifi/second-sight-reference,
+ *   docs/07-glue-logic.md, docs/05-z180.md and docs/04-capture-logic.md;
+ *   chip equations: data/lattice/Lattice_original-BE8C.ldf.
  */
 
 #pragma once
@@ -147,7 +150,8 @@ public:
     // Whether the retained card bus byte has a known driver since power-on.
     bool data_bus_driven() const { return bus_valid; }
     // U12 RGB timing logic combines the electrical sync pins in negative
-    // logic: either low pulls XSYNC low (reference docs/07-glue-logic.md).
+    // logic: either low pulls XSYNC low (second-sight-reference
+    // docs/07-glue-logic.md, "U12: AppleColor RGB timing").
     int composite_sync() { return vga.hsync_r() & vga.vsync_r(); }
     // True maps ROM over the low 128 KiB while firmware starts up.
     bool overlay_enabled() const { return rom_overlay; }
@@ -170,14 +174,16 @@ public:
 private:
     // 36 MHz board oscillator; Z8S180 reset divides EXTAL by two.
     static constexpr uint32_t EXTAL_HZ = 36'000'000;
-    // U17 copy controller (undumped 18CV8), modeled from the reference's
-    // "Copy timing budget" (07-glue-logic): BUSREQ at the first PHI
-    // edge after CATCH, /WR at the first PHI edge after BUSACK, then two PHI of
+    // U17 copy controller (undumped 18CV8), modeled using the copy timing
+    // budget (second-sight-reference docs/07-glue-logic.md, "Copy timing
+    // budget"): BUSREQ at the first PHI edge after CATCH, /WR at the first
+    // PHI edge after BUSACK, then two PHI of
     // /WR, the shortest registered pulse meeting the SRAM's 60 ns at 18 MHz.
     static constexpr unsigned COPY_WRITE_PHI = 2;
     // U15 Z180 memory decoder (undumped) has no read/write input: three waits,
     // the least common count meeting the Oak's worst-case write at 18 MHz
-    // (reference 05-z180, "External waits and worst-case margins").
+    // (second-sight-reference docs/05-z180.md, "External waits and
+    // worst-case margins").
     static constexpr unsigned FORCED_MEMORY_WAITS = 3;
     // Scheduler upper bound only; the acknowledge edge can end a slice sooner.
     static constexpr unsigned HANDSHAKE_SLICE_PHI = 128;
@@ -274,7 +280,8 @@ private:
     Z180Time copy_deadline = Z180Time::never, copy_cpu_edge, host_epoch;
     bool copy_in_cpu_edge = false;
     // Retained slot pins and feedback state, including ACK edges between
-    // PH0 transitions (original BE8C LDF 424-445).
+    // PH0 transitions. The chip's equation listing is second-sight-reference
+    // data/lattice/Lattice_original-BE8C.ldf, lines 424-445.
     megaii_transfer_t phase_transfer;
     ss_capture_result_t phase_decode;
     bool phase_high = false;

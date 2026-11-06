@@ -23,11 +23,11 @@
  *   subtraction and carry. PHI is the processor clock; a T-state is one PHI.
  *   The decoder supplies base timing; helpers add conditional/repeat timing.
  *   Empty self-load handlers still consume clocks. A trap is the processor's
- *   entry to address zero for an undefined instruction. The inherited Z80
- *   helpers for unsupported encodings remain here, but the Z180 decoder
+ *   entry to address zero for an undefined instruction. Z80 helpers for
+ *   unsupported encodings remain here, but the Z180 decoder
  *   rejects them before execution.
  *
- *   Sources: Zilog UM005004-0918 pp. 173-183 for registers/addressing,
+ *   Sources: Zilog UM005004-0918 pp. 68-72 for traps, 173-183 for registers,
  *   pp. 211-236 for operations, pp. 247-250 for valid encodings, and
  *   pp. 251-280 for bus ordering. Page citations below use printed pages.
  */
@@ -35,57 +35,48 @@
 /**********************************************************
  * IY register related opcodes (FD prefix)
  **********************************************************/
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $00. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $00.
 OP(fd, 00) {
     illegal_1();
     op_00();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $01. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $01.
 OP(fd, 01) {
     illegal_1();
     op_01();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $02. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $02.
 OP(fd, 02) {
     illegal_1();
     op_02();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $03. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $03.
 OP(fd, 03) {
     illegal_1();
     op_03();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $04. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $04.
 OP(fd, 04) {
     illegal_1();
     op_04();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $05. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $05.
 OP(fd, 05) {
     illegal_1();
     op_05();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $06. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $06.
 OP(fd, 06) {
     illegal_1();
     op_06();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $07. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $07.
 OP(fd, 07) {
     illegal_1();
     op_07();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $08. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $08.
 OP(fd, 08) {
     illegal_1();
     op_08();
@@ -94,94 +85,79 @@ OP(fd, 08) {
 OP(fd, 09) {
     ADD16(IY, BC);
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $0A. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $0A.
 OP(fd, 0a) {
     illegal_1();
     op_0a();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $0B. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $0B.
 OP(fd, 0b) {
     illegal_1();
     op_0b();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $0C. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $0C.
 OP(fd, 0c) {
     illegal_1();
     op_0c();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $0D. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $0D.
 OP(fd, 0d) {
     illegal_1();
     op_0d();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $0E. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $0E.
 OP(fd, 0e) {
     illegal_1();
     op_0e();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $0F. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $0F.
 OP(fd, 0f) {
     illegal_1();
     op_0f();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $10. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $10.
 OP(fd, 10) {
     illegal_1();
     op_10();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $11. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $11.
 OP(fd, 11) {
     illegal_1();
     op_11();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $12. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $12.
 OP(fd, 12) {
     illegal_1();
     op_12();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $13. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $13.
 OP(fd, 13) {
     illegal_1();
     op_13();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $14. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $14.
 OP(fd, 14) {
     illegal_1();
     op_14();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $15. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $15.
 OP(fd, 15) {
     illegal_1();
     op_15();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $16. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $16.
 OP(fd, 16) {
     illegal_1();
     op_16();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $17. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $17.
 OP(fd, 17) {
     illegal_1();
     op_17();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $18. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $18.
 OP(fd, 18) {
     illegal_1();
     op_18();
@@ -190,45 +166,38 @@ OP(fd, 18) {
 OP(fd, 19) {
     ADD16(IY, DE);
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $1A. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $1A.
 OP(fd, 1a) {
     illegal_1();
     op_1a();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $1B. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $1B.
 OP(fd, 1b) {
     illegal_1();
     op_1b();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $1C. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $1C.
 OP(fd, 1c) {
     illegal_1();
     op_1c();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $1D. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $1D.
 OP(fd, 1d) {
     illegal_1();
     op_1d();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $1E. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $1E.
 OP(fd, 1e) {
     illegal_1();
     op_1e();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $1F. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $1F.
 OP(fd, 1f) {
     illegal_1();
     op_1f();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $20. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $20.
 OP(fd, 20) {
     illegal_1();
     op_20();
@@ -261,15 +230,13 @@ OP(fd, 25) {
 OP(fd, 26) {
     iyh = ARG();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $27. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $27.
 OP(fd, 27) {
     illegal_1();
     op_27();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $28. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $28.
 OP(fd, 28) {
     illegal_1();
     op_28();
@@ -302,33 +269,28 @@ OP(fd, 2d) {
 OP(fd, 2e) {
     iyl = ARG();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $2F. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $2F.
 OP(fd, 2f) {
     illegal_1();
     op_2f();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $30. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $30.
 OP(fd, 30) {
     illegal_1();
     op_30();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $31. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $31.
 OP(fd, 31) {
     illegal_1();
     op_31();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $32. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $32.
 OP(fd, 32) {
     illegal_1();
     op_32();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $33. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $33.
 OP(fd, 33) {
     illegal_1();
     op_33();
@@ -351,15 +313,13 @@ OP(fd, 36) {
     EAY();
     WM(ea, ARG());
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $37. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $37.
 OP(fd, 37) {
     illegal_1();
     op_37();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $38. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $38.
 OP(fd, 38) {
     illegal_1();
     op_38();
@@ -368,63 +328,53 @@ OP(fd, 38) {
 OP(fd, 39) {
     ADD16(IY, SP);
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $3A. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $3A.
 OP(fd, 3a) {
     illegal_1();
     op_3a();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $3B. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $3B.
 OP(fd, 3b) {
     illegal_1();
     op_3b();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $3C. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $3C.
 OP(fd, 3c) {
     illegal_1();
     op_3c();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $3D. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $3D.
 OP(fd, 3d) {
     illegal_1();
     op_3d();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $3E. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $3E.
 OP(fd, 3e) {
     illegal_1();
     op_3e();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $3F. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $3F.
 OP(fd, 3f) {
     illegal_1();
     op_3f();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $40. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $40.
 OP(fd, 40) {
     illegal_1();
     op_40();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $41. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $41.
 OP(fd, 41) {
     illegal_1();
     op_41();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $42. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $42.
 OP(fd, 42) {
     illegal_1();
     op_42();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $43. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $43.
 OP(fd, 43) {
     illegal_1();
     op_43();
@@ -444,33 +394,28 @@ OP(fd, 46) {
     EAY();
     b8 = RM(ea);
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $47. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $47.
 OP(fd, 47) {
     illegal_1();
     op_47();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $48. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $48.
 OP(fd, 48) {
     illegal_1();
     op_48();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $49. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $49.
 OP(fd, 49) {
     illegal_1();
     op_49();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $4A. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $4A.
 OP(fd, 4a) {
     illegal_1();
     op_4a();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $4B. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $4B.
 OP(fd, 4b) {
     illegal_1();
     op_4b();
@@ -490,33 +435,28 @@ OP(fd, 4e) {
     EAY();
     c8 = RM(ea);
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $4F. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $4F.
 OP(fd, 4f) {
     illegal_1();
     op_4f();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $50. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $50.
 OP(fd, 50) {
     illegal_1();
     op_50();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $51. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $51.
 OP(fd, 51) {
     illegal_1();
     op_51();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $52. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $52.
 OP(fd, 52) {
     illegal_1();
     op_52();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $53. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $53.
 OP(fd, 53) {
     illegal_1();
     op_53();
@@ -536,33 +476,28 @@ OP(fd, 56) {
     EAY();
     d8 = RM(ea);
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $57. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $57.
 OP(fd, 57) {
     illegal_1();
     op_57();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $58. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $58.
 OP(fd, 58) {
     illegal_1();
     op_58();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $59. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $59.
 OP(fd, 59) {
     illegal_1();
     op_59();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $5A. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $5A.
 OP(fd, 5a) {
     illegal_1();
     op_5a();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $5B. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $5B.
 OP(fd, 5b) {
     illegal_1();
     op_5b();
@@ -582,8 +517,7 @@ OP(fd, 5e) {
     EAY();
     e8 = RM(ea);
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $5F. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $5F.
 OP(fd, 5f) {
     illegal_1();
     op_5f();
@@ -697,8 +631,7 @@ OP(fd, 75) {
     EAY();
     WM(ea, l8);
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $76. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $76.
 OP(fd, 76) {
     illegal_1();
     op_76();
@@ -709,26 +642,22 @@ OP(fd, 77) {
     WM(ea, a8);
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $78. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $78.
 OP(fd, 78) {
     illegal_1();
     op_78();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $79. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $79.
 OP(fd, 79) {
     illegal_1();
     op_79();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $7A. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $7A.
 OP(fd, 7a) {
     illegal_1();
     op_7a();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $7B. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $7B.
 OP(fd, 7b) {
     illegal_1();
     op_7b();
@@ -748,33 +677,28 @@ OP(fd, 7e) {
     EAY();
     a8 = RM(ea);
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $7F. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $7F.
 OP(fd, 7f) {
     illegal_1();
     op_7f();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $80. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $80.
 OP(fd, 80) {
     illegal_1();
     op_80();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $81. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $81.
 OP(fd, 81) {
     illegal_1();
     op_81();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $82. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $82.
 OP(fd, 82) {
     illegal_1();
     op_82();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $83. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $83.
 OP(fd, 83) {
     illegal_1();
     op_83();
@@ -795,33 +719,28 @@ OP(fd, 86) {
     EAY();
     ADD(RM(ea));
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $87. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $87.
 OP(fd, 87) {
     illegal_1();
     op_87();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $88. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $88.
 OP(fd, 88) {
     illegal_1();
     op_88();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $89. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $89.
 OP(fd, 89) {
     illegal_1();
     op_89();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $8A. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $8A.
 OP(fd, 8a) {
     illegal_1();
     op_8a();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $8B. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $8B.
 OP(fd, 8b) {
     illegal_1();
     op_8b();
@@ -844,33 +763,28 @@ OP(fd, 8e) {
     EAY();
     ADC(RM(ea));
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $8F. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $8F.
 OP(fd, 8f) {
     illegal_1();
     op_8f();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $90. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $90.
 OP(fd, 90) {
     illegal_1();
     op_90();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $91. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $91.
 OP(fd, 91) {
     illegal_1();
     op_91();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $92. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $92.
 OP(fd, 92) {
     illegal_1();
     op_92();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $93. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $93.
 OP(fd, 93) {
     illegal_1();
     op_93();
@@ -891,33 +805,28 @@ OP(fd, 96) {
     EAY();
     SUB(RM(ea));
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $97. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $97.
 OP(fd, 97) {
     illegal_1();
     op_97();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $98. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $98.
 OP(fd, 98) {
     illegal_1();
     op_98();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $99. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $99.
 OP(fd, 99) {
     illegal_1();
     op_99();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $9A. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $9A.
 OP(fd, 9a) {
     illegal_1();
     op_9a();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $9B. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $9B.
 OP(fd, 9b) {
     illegal_1();
     op_9b();
@@ -940,33 +849,28 @@ OP(fd, 9e) {
     EAY();
     SBC(RM(ea));
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $9F. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $9F.
 OP(fd, 9f) {
     illegal_1();
     op_9f();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $A0. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A0.
 OP(fd, a0) {
     illegal_1();
     op_a0();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $A1. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A1.
 OP(fd, a1) {
     illegal_1();
     op_a1();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $A2. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A2.
 OP(fd, a2) {
     illegal_1();
     op_a2();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $A3. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A3.
 OP(fd, a3) {
     illegal_1();
     op_a3();
@@ -987,33 +891,28 @@ OP(fd, a6) {
     EAY();
     AND(RM(ea));
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $A7. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A7.
 OP(fd, a7) {
     illegal_1();
     op_a7();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $A8. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A8.
 OP(fd, a8) {
     illegal_1();
     op_a8();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $A9. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A9.
 OP(fd, a9) {
     illegal_1();
     op_a9();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $AA. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $AA.
 OP(fd, aa) {
     illegal_1();
     op_aa();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $AB. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $AB.
 OP(fd, ab) {
     illegal_1();
     op_ab();
@@ -1036,33 +935,28 @@ OP(fd, ae) {
     EAY();
     XOR(RM(ea));
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $AF. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $AF.
 OP(fd, af) {
     illegal_1();
     op_af();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $B0. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B0.
 OP(fd, b0) {
     illegal_1();
     op_b0();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $B1. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B1.
 OP(fd, b1) {
     illegal_1();
     op_b1();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $B2. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B2.
 OP(fd, b2) {
     illegal_1();
     op_b2();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $B3. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B3.
 OP(fd, b3) {
     illegal_1();
     op_b3();
@@ -1083,33 +977,28 @@ OP(fd, b6) {
     EAY();
     OR(RM(ea));
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $B7. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B7.
 OP(fd, b7) {
     illegal_1();
     op_b7();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $B8. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B8.
 OP(fd, b8) {
     illegal_1();
     op_b8();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $B9. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B9.
 OP(fd, b9) {
     illegal_1();
     op_b9();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $BA. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $BA.
 OP(fd, ba) {
     illegal_1();
     op_ba();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $BB. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $BB.
 OP(fd, bb) {
     illegal_1();
     op_bb();
@@ -1130,76 +1019,64 @@ OP(fd, be) {
     EAY();
     CP(RM(ea));
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $BF. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $BF.
 OP(fd, bf) {
     illegal_1();
     op_bf();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $C0. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C0.
 OP(fd, c0) {
     illegal_1();
     op_c0();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $C1. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C1.
 OP(fd, c1) {
     illegal_1();
     op_c1();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $C2. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C2.
 OP(fd, c2) {
     illegal_1();
     op_c2();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $C3. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C3.
 OP(fd, c3) {
     illegal_1();
     op_c3();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $C4. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C4.
 OP(fd, c4) {
     illegal_1();
     op_c4();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $C5. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C5.
 OP(fd, c5) {
     illegal_1();
     op_c5();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $C6. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C6.
 OP(fd, c6) {
     illegal_1();
     op_c6();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $C7. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C7.
 OP(fd, c7) {
     illegal_1();
     op_c7();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $C8. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C8.
 OP(fd, c8) {
     illegal_1();
     op_c8();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $C9. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C9.
 OP(fd, c9) {
     illegal_1();
     op_c9();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $CA. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $CA.
 OP(fd, ca) {
     illegal_1();
     op_ca();
@@ -1210,131 +1087,110 @@ OP(fd, cb) {
     EAY();
     extra_cycles += exec_xycb(ROP());
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $CC. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $CC.
 OP(fd, cc) {
     illegal_1();
     op_cc();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $CD. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $CD.
 OP(fd, cd) {
     illegal_1();
     op_cd();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $CE. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $CE.
 OP(fd, ce) {
     illegal_1();
     op_ce();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $CF. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $CF.
 OP(fd, cf) {
     illegal_1();
     op_cf();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $D0. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D0.
 OP(fd, d0) {
     illegal_1();
     op_d0();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $D1. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D1.
 OP(fd, d1) {
     illegal_1();
     op_d1();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $D2. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D2.
 OP(fd, d2) {
     illegal_1();
     op_d2();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $D3. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D3.
 OP(fd, d3) {
     illegal_1();
     op_d3();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $D4. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D4.
 OP(fd, d4) {
     illegal_1();
     op_d4();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $D5. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D5.
 OP(fd, d5) {
     illegal_1();
     op_d5();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $D6. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D6.
 OP(fd, d6) {
     illegal_1();
     op_d6();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $D7. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D7.
 OP(fd, d7) {
     illegal_1();
     op_d7();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $D8. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D8.
 OP(fd, d8) {
     illegal_1();
     op_d8();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $D9. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D9.
 OP(fd, d9) {
     illegal_1();
     op_d9();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $DA. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $DA.
 OP(fd, da) {
     illegal_1();
     op_da();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $DB. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $DB.
 OP(fd, db) {
     illegal_1();
     op_db();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $DC. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $DC.
 OP(fd, dc) {
     illegal_1();
     op_dc();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $DD. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $DD.
 OP(fd, dd) {
     illegal_1();
     op_dd();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $DE. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $DE.
 OP(fd, de) {
     illegal_1();
     op_de();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $DF. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $DF.
 OP(fd, df) {
     illegal_1();
     op_df();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $E0. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $E0.
 OP(fd, e0) {
     illegal_1();
     op_e0();
@@ -1343,8 +1199,7 @@ OP(fd, e0) {
 OP(fd, e1) {
     POP(IY);
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $E2. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $E2.
 OP(fd, e2) {
     illegal_1();
     op_e2();
@@ -1353,8 +1208,7 @@ OP(fd, e2) {
 OP(fd, e3) {
     EXSP(IY);
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $E4. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $E4.
 OP(fd, e4) {
     illegal_1();
     op_e4();
@@ -1363,21 +1217,18 @@ OP(fd, e4) {
 OP(fd, e5) {
     PUSH(IY);
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $E6. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $E6.
 OP(fd, e6) {
     illegal_1();
     op_e6();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $E7. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $E7.
 OP(fd, e7) {
     illegal_1();
     op_e7();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $E8. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $E8.
 OP(fd, e8) {
     illegal_1();
     op_e8();
@@ -1386,94 +1237,79 @@ OP(fd, e8) {
 OP(fd, e9) {
     pc16 = iy16;
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $EA. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $EA.
 OP(fd, ea) {
     illegal_1();
     op_ea();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $EB. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $EB.
 OP(fd, eb) {
     illegal_1();
     op_eb();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $EC. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $EC.
 OP(fd, ec) {
     illegal_1();
     op_ec();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $ED. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $ED.
 OP(fd, ed) {
     illegal_1();
     op_ed();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $EE. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $EE.
 OP(fd, ee) {
     illegal_1();
     op_ee();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $EF. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $EF.
 OP(fd, ef) {
     illegal_1();
     op_ef();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $F0. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F0.
 OP(fd, f0) {
     illegal_1();
     op_f0();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $F1. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F1.
 OP(fd, f1) {
     illegal_1();
     op_f1();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $F2. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F2.
 OP(fd, f2) {
     illegal_1();
     op_f2();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $F3. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F3.
 OP(fd, f3) {
     illegal_1();
     op_f3();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $F4. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F4.
 OP(fd, f4) {
     illegal_1();
     op_f4();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $F5. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F5.
 OP(fd, f5) {
     illegal_1();
     op_f5();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $F6. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F6.
 OP(fd, f6) {
     illegal_1();
     op_f6();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $F7. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F7.
 OP(fd, f7) {
     illegal_1();
     op_f7();
 }
 
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $F8. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F8.
 OP(fd, f8) {
     illegal_1();
     op_f8();
@@ -1482,38 +1318,32 @@ OP(fd, f8) {
 OP(fd, f9) {
     sp16 = iy16;
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $FA. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $FA.
 OP(fd, fa) {
     illegal_1();
     op_fa();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $FB. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $FB.
 OP(fd, fb) {
     illegal_1();
     op_fb();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $FC. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $FC.
 OP(fd, fc) {
     illegal_1();
     op_fc();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $FD. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $FD.
 OP(fd, fd) {
     illegal_1();
     op_fd();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $FE. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $FE.
 OP(fd, fe) {
     illegal_1();
     op_fe();
 }
-// Retained Z80 fallback: diagnose the prefix and call unprefixed opcode $FF. The Z180 decoder
-// takes an undefined-instruction trap before this handler (UM0050 pp. 68-72, 247-250).
+// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $FF.
 OP(fd, ff) {
     illegal_1();
     op_ff();

@@ -41,6 +41,10 @@
  *   https://github.com/jawaidbazyar2/secondsight . Zilog UM005004-0918 pp. 16-30
  *   and 95-113 describe processor bus ownership and DMA. Board grant lengths
  *   below are scheduling choices; those Zilog pages do not specify card delays.
+ *   Board analysis: https://github.com/Webifi/second-sight-reference,
+ *   docs/07-glue-logic.md, docs/05-z180.md, docs/04-capture-logic.md,
+ *   docs/reference/oti087-registers.md and
+ *   data/lattice/Lattice_original-BE8C.ldf (the chip's equation listing).
  */
 
 #include "ss_card.hpp"
@@ -120,7 +124,7 @@ struct SSCard::Worker {
     std::atomic<uint64_t> horizon{0};
     // Worker-only next-entry index and latest host time whose inputs are known.
     uint64_t next = 0, known = 0;
-    // Short bus and frontier waits stay awake for this many empty checks.
+    // Short bus and input waits stay awake for this many empty checks.
     // Full-state fences sleep immediately while the host owns the card.
     static constexpr unsigned IDLE_CHECKS = 1U << 18;
     // 64 Mega II cycles of 14 host ticks: about 63 microseconds.
@@ -129,7 +133,7 @@ struct SSCard::Worker {
     alignas(64) std::atomic<bool> sleeping{false};
     std::atomic<bool> stop{false};
     // A reset requests cancellation at the current exact fence. detached
-    // means no ISA handler remains live on the worker stack.
+    // means no instruction handler remains live on the worker stack.
     std::atomic<bool> mutation{false}, detached{true};
     // Only the renderer requests/owns this handoff; the worker publishes Ready
     // after finishing chip work at its current scheduler edge. No pixel copy.
@@ -169,7 +173,8 @@ SSCard::SSCard(const uint8_t *image, uint64_t rate, SSCapture::LatticeMap lattic
     std::memcpy(rom.data(), image, rom.size());
     // SD7:0 is this bus; SD15:8 is open. Oak's scan-test convention borrows
     // the byte already retained by every CPU access, including direct reads.
-    // Second Sight reference, docs/reference/oti087-registers.md, ext $03.
+    // Second-sight-reference docs/reference/oti087-registers.md,
+    // extended register $03.
     vga.bind_system_data(bus_data);
     transfers.reserve(QUEUE_SIZE);
     // The CPU has no knowledge of Apple addresses or video chips. These
@@ -455,7 +460,7 @@ void SSCard::stream_entries() {
 
             if (active) {
                 // RDY retains this same transfer; its later PH0 edges are
-                // known even while the host is held (Apple TN68 Fig.2).
+                // known even while the host is held (Apple IIgs Technical Note 68 Fig.2).
                 end = entry.plain || entry.access || entry.conditional
                     ? transfer_deadline(high ? fall : slot_high(fall))
                     : transfer_deadline(entry.ticks);
@@ -544,8 +549,9 @@ bool SSCard::event_clear(uint64_t ticks) const {
            event_line.ack_ticks.load(std::memory_order_relaxed) <= slot_high(ticks);
 }
 
-// A zero-hold certificate needs ACK released and RUN recovered before the
-// request's PH0 high. Pending alone is not the RDY pin (BE8C LDF 424-445).
+// The next request can avoid an RDY hold only if ACK is released and RUN
+// recovers before its PH0 high. Pending alone is not the RDY pin; see the chip's
+// equation listing, data/lattice/Lattice_original-BE8C.ldf, lines 424-445.
 void SSCard::publish_event_state(uint64_t accepted_ticks) {
     event_accepted_tick = accepted_ticks;
     event_line.ack_ticks.store(event_ready_tick, std::memory_order_relaxed);
@@ -613,7 +619,7 @@ void SSCard::request_presentation(uint64_t ticks, bool exact) {
     publish_time(ticks);
     publish_entries();
     // A cancelled request may still be finishing its Oak preparation. Do not
-    // let an old completed fence certify ownership for a later inspection.
+    // let an old completed synchronization permit a later inspection.
     synchronized_time = NO_TICKS;
     stopping_post = false;
     collect_irq();
@@ -931,8 +937,8 @@ void SSCard::run_copy_edges(Z180Time now) {
         case CopyPhase::write_start:
             // /WR starts: write what the U5/U6 address latches and the U2
             // Apple data-in latch hold now, not what they held at CATCH
-            // (reference 07-glue-logic, "Copy timing budget"). The latch
-            // drives the card data bus.
+            // (second-sight-reference docs/07-glue-logic.md, "Copy timing
+            // budget"). The latch drives the card data bus.
             copy_phase = CopyPhase::write_end;
             copy_pending = false;
             copy_deadline = edge + copy_write_period;
@@ -956,7 +962,7 @@ void SSCard::run_copy_edges(Z180Time now) {
 }
 
 // A CATCH while the U17 copy controller is busy sets its one pending edge;
-// later edges merge (the MAME model's approximation: the GAL is undumped).
+// later edges merge. This is an approximation: the controller is undumped.
 void SSCard::copy_capture(Z180Time when, Z180Time now) {
     copy_pending = true;
     if (copy_phase == CopyPhase::idle) {
@@ -1013,7 +1019,8 @@ unsigned SSCard::extra_wait(Z180::Access access, uint32_t address) {
     // Return full PHI periods of external wait. Round the half-PHI count up
     // to avoid allowing a CPU access before the video chip is ready.
     // Without the Oak's DRAM timeline, use the reference's no-contention
-    // counts at 18 MHz (05-z180, "A functional timing estimate"): reads 5,
+    // counts at 18 MHz (second-sight-reference docs/05-z180.md,
+    // "A functional timing estimate"): reads 5,
     // writes 5, or 3 with the write cache on. The U15 Z180 memory decoder
     // forces its own count from its decode, so that count is a floor in PHI.
     const unsigned write = access == Z180::Access::MemoryWrite;
@@ -1174,7 +1181,8 @@ void SSCard::io_write(uint16_t port, uint8_t data) {
 uint64_t SSCard::process(megaii_transfer_t &transfer) {
     // With no possible hold, sample the U3 Apple data-out latch at the fall
     // without leaving the CPU stack. The next unseen PH0 high and the caller's
-    // observation fence bound the rest of this instruction (TN68 Fig. 2).
+    // observation fence bound the rest of this instruction (Apple IIgs
+    // Technical Note 68, Fig. 2).
     const uint64_t fence = observation_limit.load(std::memory_order_acquire);
     if (!worker && batch_execution && fence > transfer.ticks &&
         !capture.pending && !capture.stall && !ack_selected &&
@@ -1206,9 +1214,9 @@ inline Z180Time SSCard::limit_card_deadline(Z180Time end) {
 }
 
 // Apply U7 Lattice chip pin changes, then pass a copy edge to the U17 copy
-// controller. CATCH does not depend on RUN (original BE8C LDF, blocks
-// A7/A2/B1), so a held phase can pair a new address with the old byte in
-// the U2 Apple data-in latch.
+// controller. CATCH does not depend on RUN: see the chip's equation listing,
+// data/lattice/Lattice_original-BE8C.ldf, blocks A7/A2/B1. A held phase
+// can pair a new address with the old byte in the U2 Apple data-in latch.
 void SSCard::phase(bool high, Z180Time timestamp) {
     // U17 copy controller edges before this one act on the latches as they were.
     advance_copy(timestamp);
@@ -1277,10 +1285,11 @@ bool SSCard::input_passed(uint64_t ticks) {
 }
 
 // transfer.ticks identifies its first PH0 fall; timestamp is that fall in
-// card time. On RDY the
-// address, data and FPI bank remain presented for each following real period.
-// ACK, RUN/STALL release and the accepted fall are distinct. TN68 Fig.2
-// requires RDY settled 60 ns before the fall; a late release costs a period.
+// card time. While RDY holds the access, address, data and the IIgs Fast
+// Processor Interface bank remain presented for each following bus period.
+// ACK, RUN/STALL release and the accepted fall are distinct. Apple IIgs
+// Technical Note 68, Fig. 2 requires RDY settled 60 ns before the fall;
+// a late release costs a period.
 uint64_t SSCard::accept_transfer(megaii_transfer_t &transfer, Z180Time timestamp) {
     uint64_t fall = transfer.ticks;
     const uint64_t first = fall;
@@ -1293,8 +1302,10 @@ uint64_t SSCard::accept_transfer(megaii_transfer_t &transfer, Z180Time timestamp
             std::to_string(slot_high(fall)) + " address " + std::to_string(transfer.address));
     bool started = false, high = false, accepted = false, held = false;
     // PH0 edges are board deadlines, not processor returns. Keeping the
-    // retained transfer on the scheduler stack preserves the current ISA
-    // handler across RDY periods (TN68 Fig.2; BE8C LDF 424-445).
+    // retained transfer on the scheduler stack preserves the current
+    // instruction handler across RDY periods (Apple IIgs Technical Note 68, Fig. 2;
+    // chip equation listing data/lattice/Lattice_original-BE8C.ldf,
+    // lines 424-445).
     auto scheduler = [&]() -> uint64_t {
         const auto now = card_time();
         service_card_deadlines(now);
@@ -1337,7 +1348,7 @@ uint64_t SSCard::accept_transfer(megaii_transfer_t &transfer, Z180Time timestamp
     return extra;
 }
 
-// Consume only horizons whose earlier release/output edges are resolved.
+// Advance the host only through time with all earlier release/output edges resolved.
 void SSCard::consume_progress() {
     const uint64_t ticks = worker->horizon.load(std::memory_order_acquire);
     if (ticks > delivered_horizon) {
@@ -1366,8 +1377,8 @@ uint64_t SSCard::run_transfers(std::vector<megaii_transfer_t> &queue, uint64_t t
     // No grant by default. Full-state observations, including a frame end,
     // cannot be answered from a later instruction boundary on the direct path.
     const uint64_t granted = std::max(target, std::min(hard_limit, fence));
-    // The extra retirement allowance must end
-    // within the published input horizon. Queued inputs themselves remain
+    // The extra retirement allowance must end within the time for which host
+    // inputs are known. Queued inputs remain
     // scheduler deadlines, including their PH0 high before the sample fall.
     if (worker &&
         hard_limit > worker->known)
@@ -1423,7 +1434,7 @@ uint64_t SSCard::run_transfers(std::vector<megaii_transfer_t> &queue, uint64_t t
                 cpu->run_half_until(soft, std::max(soft, cpu->half_cycles() +
                     (hard > now ? (hard - now).ceil_ticks(cpu_hz * 2) : 0)));
                 // A retirement can land exactly on a fall; settle that edge
-                // before exposing its sampled byte, without running another ISA.
+                // before exposing its sampled byte, without running another instruction.
                 scheduler();
             } catch (...) {
                 cpu->set_scheduler({});
@@ -1500,8 +1511,9 @@ uint64_t SSCard::observe(megaii_transfer_t &host_transfer) {
             cpu_relax();
         }
         // The result's release store follows the accepted fall. Take its
-        // horizon after acquiring that result, even if the earlier load
-        // saw only an intermediate held phase (TN68, Ready signal).
+        // progress time after acquiring that result, even if the earlier load
+        // saw only an intermediate held phase (Apple IIgs Technical Note 68,
+        // Ready signal).
         consume_progress();
         if (possible_event) {
             event_ticks = transfer.ticks;

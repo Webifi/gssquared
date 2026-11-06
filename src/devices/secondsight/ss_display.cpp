@@ -164,7 +164,7 @@ SDL_Texture *SecondSightDisplay::prepare_texture(SDL_Renderer *dest, Texture &te
     const int vs = crtc.vert_blank_start;
     const int vn = (crtc.vert_blank_end - crtc.vert_blank_start) & 255;
     const int rows = timing.height / (crtc.vert_disp_end + 1);
-    // The monitor window, centered on the active display by the owner's
+    // Center the monitor window on the active display using the user's
     // position controls.
     const double line_hz = 1.0 / timing.line_period();
     const int fields = timing.interlaced ? 2 : 1;

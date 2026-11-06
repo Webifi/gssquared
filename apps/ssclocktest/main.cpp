@@ -191,7 +191,8 @@ int main() {
         assert(card.observe(next) == 0);
         assert(select == 1 && data == 1);
         // The Apple samples on PH0 fall, not on the end of the A0 pulse.
-        // Here that fall follows the data edge (TN68 Fig.2; UM0050 Figs.7-8).
+        // Here that fall follows the data edge (Apple IIgs Technical Note 68,
+        // Fig. 2; Zilog UM0050, Figs. 7-8).
         assert(data_half <= fall && z.half_cycles() == fall);
         assert(card.capture_state().pending); // The new host event survives the A0 cycle.
         if (read)

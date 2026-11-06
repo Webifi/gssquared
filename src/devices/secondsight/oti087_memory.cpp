@@ -16,7 +16,7 @@
  *   databook pp. 35, 42-44, with its OTI-087X addendum; IBM VGA/XGA Technical
  *   Reference May 1992 pp. 2-38, 2-54 and 2-72 to 2-75. Firmware-derived rules
  *   are collected at https://github.com/Webifi/second-sight-reference,
- *   docs/06-video.md, "The 64-bit latch lane rule". Inferences and undefined
+ *   docs/06-video.md and docs/15-oak-drawing.md. Inferences and undefined
  *   combinations are marked below, separate from documented chip behavior.
  */
 
@@ -79,8 +79,8 @@ uint32_t OTI087::storage_address(uint32_t linear) const {
 
 // Read one display-byte address through the common plane-storage mapping.
 uint8_t OTI087::linear_byte(uint32_t address) const {
-    // Second Sight reference, docs/15-oak-drawing.md, "Hardware scrolling":
-    // above $FFFFF the OTI-087X strobes RASHn, open on this card (Oak p22).
+    // Above $FFFFF the OTI-087X strobes RASHn, open on this card (Oak p. 22;
+    // second-sight-reference docs/15-oak-drawing.md, "Hardware scrolling").
     // Fixed $FF is a model value for undriven DRAM, not a mirror.
     return address < VRAM_SIZE ? memory[storage_address(address)] : 0xff;
 }
@@ -107,8 +107,9 @@ uint8_t OTI087::bus_memory_r(uint32_t address) {
             std::fill(std::begin(latch), std::end(latch), 0xff);
             std::fill(std::begin(gc.latch), std::end(gc.latch), 0xff);
         } else if (bit(ext[0x22], 4) && bit(sequencer.data[4], 3)) {
-            // Second Sight reference, "The 64-bit latch lane rule": inferred
-            // from ROM_BEEF.asm sub_AE92 super-high-resolution lookup stores.
+            // Inferred from ROM_BEEF.asm sub_AE92 super-high-resolution
+            // lookup stores (second-sight-reference docs/06-video.md,
+            // "The 64-bit latch lane rule").
             // An 8-bit chain-4 read loads the addressed four-byte word into
             // both halves of the wide latch.
             uint32_t const base = storage_address(offset & ~3U);
@@ -313,12 +314,13 @@ void OTI087::packed_w(uint32_t address, uint8_t data) {
     // OTI-087X data book p. 43: pixel masking disables packed-pixel address/map masking.
     // With ordinary masking, a byte store still addresses only one byte.
     // With the wide latch and pixel mask, A0 selects four bytes; A1/A2 do not
-    // select an individual byte (Second Sight reference, "The 64-bit latch lane
-    // rule"). Color expansion uses the same half: docs/15-oak-drawing.md,
-    // "Color expansion: 4 pixels from 4 bits". Ext24's bank is already included.
+    // select an individual byte (second-sight-reference docs/06-video.md,
+    // "The 64-bit latch lane rule"). Color expansion uses the same half
+    // (docs/15-oak-drawing.md, "Color expansion: 4 pixels from 4 bits").
+    // Ext24's bank is already included.
     // Mode 0 fills the same four-byte half as mode 1, even without expansion.
-    // Second Sight reference, docs/15-oak-drawing.md, "The pixel mask:
-    // transparency for latch writes": LIN8_SC.DRV $1AFD-$1B96 uses paired CPU bytes.
+    // Oak's Windows driver uses paired CPU bytes (second-sight-reference
+    // docs/15-oak-drawing.md, "The pixel mask: transparency for latch writes").
     bool const half_store = (pixel_mask && (wide_chain4 || gc.write_mode != 1)) || expand;
     bool const single_store = addressed_latch && gc.write_mode == 1 && !expand;
     uint32_t const base = single_store             ? address

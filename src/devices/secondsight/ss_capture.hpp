@@ -19,6 +19,9 @@
  *   handlers at https://github.com/jawaidbazyar2/secondsight . The selectable
  *   BE8C/BBB1 capture equations model card logic; the manuals describe the
  *   signals and firmware interface, not every equation or internal delay.
+ *   Capture equations and analysis: https://github.com/Webifi/second-sight-reference,
+ *   data/lattice/Lattice_original-BE8C.ldf, data/lattice/Lattice_v2.0.ldf
+ *   and docs/04-capture-logic.md.
  */
 
 #pragma once
@@ -65,18 +68,21 @@ public:
     uint8_t bands = 0;
     // The band of a copy whose PH0-high window is open. The chip sets a band
     // flag as a level while CAPTURE and PH0 are high, so a $A4/$A5 read in
-    // that window returns 1 and leaves it set (v2.0 LDF 576-582, 634-640).
+    // that window returns 1 and leaves it set. See the chip equation listing
+    // in data/lattice/Lattice_v2.0.ldf, lines 576-582 and 634-640.
     uint8_t window_bands = 0;
     uint8_t event_address = 0;
     uint8_t host_input = 0;
 
     // These are feedback latches, not a pending-event shortcut for RDY.
-    // Original BE8C LDF 424-445 (v2.0 LDF 479-500 uses the same equations):
+    // Both capture designs use the same feedback equations: see the chip
+    // equation listings in data/lattice/Lattice_original-BE8C.ldf, lines
+    // 424-445, and data/lattice/Lattice_v2.0.ldf, lines 479-500.
     // PH0 is the Apple bus clock; ACK is the Z180 host acknowledgement.
     // IRQ_PENDING holds a firmware event, RUN allows another capture, and
     // STALL holds Apple RDY low. ACK clears IRQ_PENDING, RUN recovers in
-    // PH0 low, and STALL releases
-    // on the next PH0 high. The host accepts only the subsequent eligible fall.
+    // PH0 low, and STALL releases on the next PH0 high. The host accepts only
+    // the subsequent eligible fall.
     bool run = true, stall = false, event_latch = false;
     bool data_in_active = false, catch_active = false;
 
@@ -113,11 +119,13 @@ public:
         // Falling ADIN_ACTIVE loads the U2 Apple data-in latch. Falling
         // CATCH_ACTIVE requests a U17 copy controller transfer, even with RUN
         // low. A held copy reuses the latch byte only until ADIN_ACTIVE falls
-        // again (original BE8C LDF, blocks A7/A2; both output pins invert).
+        // again (both output pins invert). The original chip's equation listing,
+        // data/lattice/Lattice_original-BE8C.ldf, blocks A7/A2, shows both.
         // The bank was retained in the address phase. M2B0 is undriven in
-        // the data phase (TN68 Fig. 1) and must read low there for block A2
-        // to copy. The drawing has no pull-down; what holds it low on a
-        // production card is not known (Second Sight reference, 04-capture-logic).
+        // the data phase (Apple IIgs Technical Note 68, Fig. 1) and must read
+        // low for a copy to occur. The drawing has no pull-down; what holds it
+        // low on a production card is not known (second-sight-reference
+        // docs/04-capture-logic.md, "Copying video writes").
         const bool data_in = ph0 && ((decode.copy && run) || (!t.read && event_latch));
         const bool copy = ph0 && decode.copy;
         if (data_in_active && !data_in) host_input = t.data;

@@ -368,9 +368,10 @@ protected:
     // absolute 14.31818 MHz host tick through which the card has resolved its
     // bus pins. Advance video and scheduled devices without advancing the
     // CPU cycle counter or its
-    // interrupt pipeline (TN68, Using the Ready Signal; HR pp.58-60, 104).
+    // interrupt pipeline (Apple IIgs Technical Note 68, "Using the Ready
+    // Signal"; Apple IIgs Hardware Reference, pp. 58-60, 104).
     void advance_slot_hold(uint64_t end) {
-        // The card worker can publish a horizon already consumed by the
+        // The card worker can publish a time already consumed by the
         // access that waited for it. It must not hold the next CPU cycle.
         if (end <= get_c14m()) return;
         slot_cycle_held = true;
@@ -403,7 +404,8 @@ protected:
     }
 
     // Keep RDY retirement out of ordinary IIgs cycles. Only a retained slot
-    // access needs the device-clock advance (TN68, Using the Ready Signal).
+    // access needs the device-clock advance (Apple IIgs Technical Note 68,
+    // "Using the Ready Signal").
     [[gnu::noinline, gnu::cold]] void retire_held_slot() {
         advance_slot_hold(slot_cycle_end);
         slot_cycle_end = 0;
@@ -419,7 +421,8 @@ protected:
         uint64_t c14m_this_cycle;
         // Use the existing cycle selection for RDY retirement, so ordinary
         // cycles need no separate held-flag load. Only advance_slot_hold sets
-        // HELD; the MMU retains that bus cycle until it may retire (TN68).
+        // HELD; the MMU retains that bus cycle until it may retire
+        // (Apple IIgs Technical Note 68, "Using the Ready Signal").
         switch (cycle_type) {
         case CYCLE_TYPE_HELD:
             retire_held_slot();

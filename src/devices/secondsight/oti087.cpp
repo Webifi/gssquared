@@ -24,7 +24,8 @@
  *   IBM VGA/XGA Technical Reference May 1992, VGA registers; Brooktree Bt481A
  *   L481A_C pp. 6-8, 14-20 for palette and color formats.
  *   OTI-087X revision and software-derived details: Second Sight reference,
- *   https://github.com/Webifi/second-sight-reference, docs/06-video.md.
+ *   https://github.com/Webifi/second-sight-reference, docs/06-video.md and
+ *   docs/reference/oti087-registers.md.
  */
 
 #include "oti087.hpp"
@@ -272,8 +273,8 @@ void OTI087::io_w(uint32_t port, uint8_t data) {
 // at compile time, so normal I/O keeps its existing dispatch cost.
 template<class Video>
 uint8_t OTI087::extended_read_impl(Video &video, unsigned offset) {
-    // Second Sight reference, docs/06-video.md, "Which Oak chip": only the
-    // OTI-087X (revision E) is fitted. Oak INSTALL.EXE identifies it by 00=1,
+    // Only the OTI-087X (revision E) is fitted (second-sight-reference
+    // docs/06-video.md, "Which Oak chip"). Oak INSTALL.EXE identifies it by 00=1,
     // 01 high nibble=2. The low nibble uses zero as a model convention.
     switch (offset) {
         case 0:
@@ -372,7 +373,8 @@ uint8_t OTI087::extended_r() {
 // pin changes (OTI-087X databook, extended register descriptions).
 void OTI087::extended_w(uint8_t data) {
     if (index == 3) {
-        // OTI-087 p33; Second Sight reference, register reference, ext $03.
+        // OTI-087 p. 33; second-sight-reference
+        // docs/reference/oti087-registers.md, extended register $03.
         // Preserve all bits, including bit3/reserved modes, by convention.
         // Bit4 applies even with bit7 clear: writes already complete at each
         // access. Bit6 has no further effect at this transaction granularity.
@@ -382,7 +384,8 @@ void OTI087::extended_w(uint8_t data) {
             std::fprintf(stderr, "Second Sight OTI-087X test register $03 = $%02X: mode %u has no defined output; retaining normal operation\n",
                          unsigned(data), unsigned(data & 7));
         // Normal operation for undefined test modes is the convention in
-        // docs/reference/oti087-registers.md, ext $03, not a silicon claim.
+        // second-sight-reference docs/reference/oti087-registers.md,
+        // extended register $03; it is not a silicon claim.
         ext[3] = data;
         packed_scanout = packed() && !scan_test();
         return;
@@ -569,7 +572,8 @@ int OTI087::vsync_r() {
     // bit supplies the test phase; repeated writes leave the pin unchanged.
     // Convention: counters, Input Status 1 and CINT remain unchanged;
     // only the VGA pin and downstream composite sync see the toggle.
-    // Second Sight reference, docs/reference/oti087-registers.md, ext $03.
+    // Second-sight-reference docs/reference/oti087-registers.md,
+    // extended register $03.
     return vertical_retrace() ^ bit(miscellaneous_output, 7) ^ bit(ext[3], 5);
 }
 

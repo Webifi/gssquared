@@ -18,17 +18,19 @@
  *
  *   Sources: Zilog UM005004-0918 pp. 237-246 (timing summary), pp. 247-250
  *   (valid opcodes), pp. 251-280 (bus sequence), pp. 68-72 (trap). The block-I/O
- *   parity tables retain inherited undocumented flag behavior; they do not
- *   represent additional registers.
+ *   parity tables implement undocumented flag behavior; they do not
+ *   represent additional registers. They come from the MAME Z180 core:
+ *   https://github.com/mamedev/mame/blob/master/src/devices/cpu/z180/z180tbl.h
  */
 
-/* tmp1 value for ini/inir/outi/otir for [C.1-0][io.1-0] */
+// Parity contribution for incrementing block I/O: indexed by the low two
+// bits of C and of the transferred byte.
 static const uint8_t irep_tmp1[4][4] = {{0, 0, 1, 0}, {0, 1, 0, 1}, {1, 0, 1, 1}, {0, 1, 1, 0}};
 
-/* tmp1 value for ind/indr/outd/otdr for [C.1-0][io.1-0] */
+// The corresponding parity contribution for decrementing block I/O.
 static const uint8_t drep_tmp1[4][4] = {{0, 1, 0, 0}, {1, 0, 0, 1}, {0, 0, 1, 0}, {0, 1, 0, 1}};
 
-/* tmp2 value for all in/out repeated opcodes for B.7-0 */
+// Parity contribution indexed by the eight-bit B count after decrement.
 static const uint8_t breg_tmp2[256] = {
     0, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1,
     0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0,

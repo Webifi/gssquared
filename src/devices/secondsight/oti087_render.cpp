@@ -20,6 +20,11 @@
  *   Sources: Oak OTI-087 February 1993 databook pp. 21, 39-46 and OTI-087X addendum;
  *   IBM VGA/XGA Technical Reference May 1992 pp. 2-72 to 2-95 (address generation
  *   and palettes); Brooktree Bt481A L481A_C pp. 7-8 (direct-color bit positions).
+ *   Video analysis: https://github.com/Webifi/second-sight-reference,
+ *   docs/06-video.md, docs/15-oak-drawing.md and
+ *   docs/reference/oti087-registers.md. The analyzed Oak Windows cursor driver
+ *   is STD8_HC.DRV, SHA-256
+ *   523f60c849db7f865fce075e80a890aa1f5dbc3fb243d5b0c7e950525f6d5fa9.
  *   SIMD means one host instruction handles several pixels; scalar fallbacks
  *   apply the same conversion one pixel at a time.
  */
@@ -40,8 +45,8 @@ constexpr unsigned bit(uint32_t value, unsigned n) {
     return (value >> n) & 1;
 }
 // Two cursor bits choose color 0, color 1, leave the screen alone, or invert
-// its palette index. See the Second Sight reference, docs/06-video.md, "Hardware
-// cursor": Oak STD8_HC.DRV copies the Windows AND/XOR masks into these planes.
+// its palette index. Oak's Windows cursor driver copies AND/XOR masks into
+// these planes (second-sight-reference docs/06-video.md, "Hardware cursor").
 enum class CursorOp { color0, color1, transparent, invert };
 constexpr CursorOp cursor_codes[] = {CursorOp::color0, CursorOp::color1, CursorOp::transparent, CursorOp::invert};
 
@@ -120,7 +125,7 @@ void packed_bytes(uint8_t *dest, uint8_t const *memory, uint32_t address, unsign
 
 // RASHn selects an unpopulated megabyte on this card. Use fixed $FF bytes
 // there, including a row that crosses the boundary; never mirror RASLn.
-// Second Sight reference, docs/15-oak-drawing.md, "Hardware scrolling" (RASHn).
+// See second-sight-reference docs/15-oak-drawing.md, "Hardware scrolling".
 void packed_bytes_bounded(uint8_t *dest, uint8_t const *memory, uint32_t address, unsigned count) {
     unsigned const valid = address < OTI087::VRAM_SIZE ? std::min(count, OTI087::VRAM_SIZE - address) : 0;
     packed_bytes(dest, memory, address, valid);
@@ -317,8 +322,8 @@ unsigned OTI087::horizontal_pan(const scan_row_t &row) const {
     if (row.split && bit(attribute.data[0x10], 5))
         return 0;
     // Packed modes use IBM's eight-dot rule: zero means no shift, then
-    // one pixel per step. Second Sight reference, docs/15-oak-drawing.md,
-    // "Horizontal pixel panning"; Oak's BIOS sets pan zero in packed modes.
+    // one pixel per step. Oak's BIOS sets pan zero in packed modes
+    // (second-sight-reference docs/15-oak-drawing.md, "Horizontal pixel panning").
     if (packed())
         return row.pan & 7;
     if (!gc.alpha_dis && !bit(sequencer.data[1], 0))
@@ -414,10 +419,10 @@ void OTI087::render_changes(ss_video_buffer_t surface) {
 void OTI087::draw_packed(ss_video_buffer_t &surface, ss_video_rect_t const &clip) {
     unsigned const bytes = ramdac.bytes_per_pixel();
     // Start = CRTC start * 8; pitch = CRTC offset * 16, bypassing the VGA
-    // word/dword mux. Sources: https://github.com/Webifi/second-sight-reference,
-    // docs/06-video.md, "Packed-pixel mode and the CRTC" (Oak BIOS settings),
-    // and docs/15-oak-drawing.md, "Display features that cost no drawing"
-    // (XFree86 OAKAdjust). These packed units are inferred from that software.
+    // word/dword mux. These units are inferred from Oak BIOS settings and
+    // XFree86 OAKAdjust (second-sight-reference docs/06-video.md,
+    // "Packed-pixel mode and the CRTC", and docs/15-oak-drawing.md,
+    // "Display features that cost no drawing").
     packed_row.resize(clip.width() * bytes);
     for (int y = clip.top; y <= clip.bottom; ++y) {
         auto const row = scan_row(y);
@@ -621,8 +626,8 @@ void OTI087::draw_cursor(ss_video_buffer_t &surface, ss_video_rect_t const &clip
     uint8_t const control = ext[0x4c];
     if (!bit(control, 0) || ramdac.asleep())
         return;
-    // Second Sight reference, docs/06-video.md, "Hardware cursor": WHATVGA
-    // tested the cursor in 256-color modes only. Its colors pass through the
+    // WHATVGA tested the cursor in 256-color modes only (second-sight-reference
+    // docs/06-video.md, "Hardware cursor"). Its colors pass through the
     // Bt481 palette and pixel mask, including unchained VGA 256-color modes.
     if (ramdac.bytes_per_pixel() != 1 ||
         !(packed() || (gc.alpha_dis && gc.shift256 && bit(attribute.data[0x10], 6))))
@@ -634,20 +639,19 @@ void OTI087::draw_cursor(ss_video_buffer_t &surface, ss_video_rect_t const &clip
         return; // p45: presets end at 63, never wrap
     unsigned const skew = crtc.disp_enable_skew * char_dots() * horizontal_multiplier() / pixel_divisor();
     // Oak p44 measures cursor position from the start of the display area.
-    // Oak STD8_HC.DRV, SHA-256
-    // 523f60c849db7f865fce075e80a890aa1f5dbc3fb243d5b0c7e950525f6d5fa9,
-    // file offsets $56AD-$56C6 and $5537-$557A: signed corner coordinates;
-    // Y is the row before the cursor, at every preset, including negative Y.
+    // Oak's Windows driver uses signed corner coordinates (STD8_HC.DRV file
+    // offsets $56AD-$56C6 and $5537-$557A). It treats Y as the row before
+    // the cursor. This model applies Y+1 at every preset, including negative Y.
     // WHATVGA rounds X to a multiple of four and reports imperfect positions;
-    // Oak's driver also avoids -14. Convention: draw every signed X exactly
-    // where the registers say; no source defines the faulty pixel positions.
-    // Source analysis: https://github.com/Webifi/second-sight-reference,
-    // docs/06-video.md, "Hardware cursor", "How Oak's driver positions it".
+    // driver avoids X=-14, but the faulty positions are undocumented. Draw
+    // each signed X exactly as programmed (second-sight-reference
+    // docs/06-video.md, "How Oak's driver positions it").
     int const x0 = int(int16_t((ext[0x40] << 8) | ext[0x41])) + int(skew);
     int const yreg = int16_t((ext[0x42] << 8) | ext[0x43]);
     // Probably the comparator uses field lines: each pattern row appears
-    // in both fields. Same reference section, "Probably: twice as tall in
-    // interlace". This scales position and height, independently of presets.
+    // in both fields (second-sight-reference docs/06-video.md, "Probably:
+    // twice as tall in interlace"). This scales position and height
+    // independently of presets.
     unsigned const field_shift = get_interlace_mode() ? 1 : 0;
     unsigned const fields = 1U << field_shift;
     int const y0 = (yreg + 1) * int(fields);
@@ -670,11 +674,12 @@ void OTI087::draw_cursor(ss_video_buffer_t &surface, ss_video_rect_t const &clip
             if (blanked(x, y))
                 continue;
             unsigned const sx = x - x0 + px, sy = (unsigned(y - y0) >> field_shift) + py;
-            // STD8_HC.DRV offsets $53D2-$541B and $87A9-$87E7 use the first
-            // eight bytes of each row for plane A and the next eight for B
-            // (Second Sight reference, "Hardware cursor"). Its per-byte nibble
-            // swap reorders pixels, never planes. Probably bit2 changes only
-            // the order within each byte (same reference section), as described
+            // Oak's Windows driver (STD8_HC.DRV offsets $53D2-$541B and
+            // $87A9-$87E7) uses the first eight bytes of each row for
+            // plane A and the next eight for B (second-sight-reference
+            // docs/06-video.md, "Hardware cursor"). Its per-byte nibble swap
+            // reorders pixels, never planes. Probably bit2 changes only
+            // the order within each byte, as described
             // (Oak databook p. 46). The code table states this model's
             // interpretation of the two plane bits.
             uint8_t const a = linear_byte(address + sy * 16 + sx / 8);
@@ -691,8 +696,8 @@ void OTI087::draw_cursor(ss_video_buffer_t &surface, ss_video_rect_t const &clip
                     break;
                 case CursorOp::invert: {
                     // Oak p21: P[7:0] carries the index to the external palette
-                    // chip. The cursor's invert operation (Second Sight
-                    // reference, "Hardware cursor") therefore complements
+                    // chip. The cursor's invert operation (second-sight-reference
+                    // docs/06-video.md, "Hardware cursor") therefore complements
                     // that index before the Bt481 mask and palette lookup.
                     // Recover it from scanout, not RGB: palette entries can
                     // have equal colors and need not form complementary pairs.

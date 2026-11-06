@@ -15,7 +15,7 @@ struct SecondSightMonitorWindow {
 namespace ss_monitor {
 
 // The monitors the card drives are CRTs. Each places the picture by the
-// signal's timing; the owner only centers it with the position controls.
+// signal's timing; the user can center it with the position controls.
 //
 // VGA, a multisync monitor: it keeps its raster a fixed part of the line and
 // of the frame. At 31.5 kHz the sync polarities select the IBM vertical size

@@ -5,8 +5,8 @@
  *   generates scan addresses and timing. CGA is the older Color Graphics
  *   Adapter pixel format retained by VGA. Each single-threaded fixture
  *   owns its card and inspects registers, memory or rendered pixels.
- *   No firmware, SDL window or MAME comparison is needed. Main takes no
- *   arguments and returns zero after all assertions pass.
+ *   The checks run without firmware or an SDL window. Main takes no arguments
+ *   and returns zero after all assertions pass.
  *
  *   Sources: IBM VGA/XGA Technical Reference, May 1992, chapter 2 (pages noted
  *   per fixture); Oak OTI-087 databook, February 1993, pp. 29-46 and OTI-087X
@@ -15,7 +15,9 @@
  *   https://github.com/Webifi/second-sight-reference
  *   docs/06-video.md, "The 64-bit latch lane rule", "Packed-pixel mode and
  *   the CRTC" and "Hardware cursor"; docs/15-oak-drawing.md, "Display features
- *   that cost no drawing".
+ *   that cost no drawing"; docs/14-custom-code.md, "The current line";
+ *   docs/reference/oti087-registers.md; firmware/v1.5/src/text.asm and
+ *   firmware/v1.5/src/textsetup.asm.
  *   Missing hardware definitions are identified at the corresponding fixture
  *   and implementation. Passing those checks validates the stated model, not
  *   undocumented silicon behavior.
@@ -378,10 +380,9 @@ static void timing_checks() {
     beam(v,0); EQ(v.frame_number(),frames+1);
     // Oak p40 specifies the odd-field VSYNC position in characters. The
     // model infers that the start-address latch follows that same edge.
-    // Seq1 bit0 alone selects eight or nine dots, in alpha and graphics alike
-    // (Sequential's MISC/XXX mode). The fixture selects a two-dot pixel
-    // divisor and tests both sides of the inferred edge without taking its
-    // expected position from the model.
+    // Seq1 bit0 alone selects eight or nine dots, in alpha and graphics alike.
+    // The fixture selects a two-dot pixel divisor and tests both sides of the
+    // inferred edge without taking its expected position from the model.
     for (unsigned graphics : {0U, 1U}) for (unsigned clock8 : {0U, 1U})
         for (unsigned position : {0U, 1U, 3U, 7U}) {
             OTI087 scan; mode(scan);
@@ -398,9 +399,11 @@ static void timing_checks() {
             EQ(scan.display_state().start, 0x20);
             EQ(scan.io_r(0x3da) & 8, 8);
         }
-    // Sequential's SECOND/MISC/XX and XXX are the same planar mode except seq1
-    // bit0 and CRTC $00/$02/$04: XXX keeps 40 characters, and shortens the line
-    // from 68 to 62 characters because each character clock is nine dots.
+    // Sequential Systems' disk mode files SECOND/MISC/XX and SECOND/MISC/XXX
+    // describe two planar modes with 40 displayed characters. Switching from
+    // eight to nine dots per character and changing CRTC $00/$02/$04 shortens
+    // the line from 68 to 62 characters: 360 instead of 320 pixels at a
+    // similar line rate.
     for (unsigned xxx : {0U, 1U}) {
         OTI087 v; mode(v, false, false);
         seq(v, 1, xxx ? 0 : 1); cr(v, 0, xxx ? 0x39 : 0x3f); cr(v, 1, 0x27);
@@ -757,9 +760,12 @@ static void cursor_checks() {
 }
 
 static void cursor_position_checks() {
-    // Oak STD8_HC.DRV $56AD-$56C6/$5537-$557A (SHA-256 in draw_cursor):
-    // signed corners, Y+1 for every signed register. Odd negative X and -14 use the explicitly
-    // labeled clipping convention, not its unexplained software workaround.
+    // Oak's Windows cursor driver uses signed coordinates and treats Y as
+    // the preceding row (STD8_HC.DRV offsets $56AD-$56C6 and $5537-$557A).
+    // The model applies Y+1 even to negative Y. Test clipping at negative X,
+    // including positions where
+    // the driver applies an unexplained workaround (second-sight-reference
+    // docs/06-video.md, "Hardware cursor").
     OTI087 v;
     for (int x : {-65,-64,-15,-14,-2,0,3})
     for (int y : {-65,-64,-2,-1,0,2,7}) {
@@ -943,7 +949,9 @@ static void revision_e_checks() {
         oak(v,8,value); EQ(read(v,0x3de,8),1);
     }
     v.reset(); enable(v); EQ(read(v,0x3de,2),0);
-    // 8ETRU640.DRV stores R,G,B at rising addresses and sets Bt481 $F0.
+    // Oak's true-color driver 8ETRU640.DRV stores R,G,B at rising addresses
+    // and sets Bt481 $F0 (second-sight-reference docs/06-video.md,
+    // "24-bit (true-color) pixels").
     // Exercise vector groups and the scalar tail, with primary colors and
     // unequal components. Expected RGB comes from those bytes, not the DAC.
     mode(v,true); oak(v,0x21,6); v.dac().command_w(0xf0);
@@ -1184,9 +1192,10 @@ static void cursor_087x_checks() {
 }
 
 static void test_register_checks() {
-    // Second Sight reference, register reference ext $03 (Oak p33), and
-    // docs/14-custom-code.md, "The current line". Undefined behavior uses
-    // the explicitly documented conventions, not another emulator's output.
+    // Extended register $03 is readable and writable (Oak p. 33). CRTC $10/$11
+    // return their programmed values even when CRTC $03 bit 7 is clear; the
+    // card has no known current-line register (second-sight-reference
+    // docs/14-custom-code.md, "The current line").
     OTI087 v;
     mode(v, true);
     EQ(read(v, 0x3de, 3), 0);
@@ -1320,7 +1329,8 @@ static void test_register_checks() {
     card.catch_up(100);
     EQ(card.interrupt_bus_byte(), 0x2b); // Direct ROM fetches retain the byte after HALT.
     EQ(frame(text)[0], color(11));
-    // U12 combines the post-test VSYNC pin, not the CRTC retrace status.
+    // The U12 RGB timing logic combines the post-test VSYNC pin, not the
+    // CRTC retrace status.
     mode(text, true); text.io_w(0x3c2, 0xc3); beam(text, 2, 0);
     EQ(card.composite_sync(), 1); oak(text, 3, 0x20); EQ(card.composite_sync(), 0);
     beam(text, 2, 96); EQ(text.hsync_r(), 0); oak(text, 3, 0); EQ(card.composite_sync(), 0);

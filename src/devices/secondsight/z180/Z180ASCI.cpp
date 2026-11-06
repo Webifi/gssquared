@@ -20,7 +20,9 @@
  *   Each channel belongs to Z180 and runs only on its execution thread.
  *   Second Sight uses K silicon, with one receive byte; N silicon has four.
  *   Sources: Zilog UM005004-0918 pp. 116-146 (ASCI) and Zilog TN0053 p. 3
- *   (K/N receive buffering and error recovery).
+ *   (K/N receive buffering and error recovery). The receive-register write
+ *   convention comes from MAME (rdr_w):
+ *   https://github.com/mamedev/mame/blob/master/src/devices/cpu/z180/z180asci.cpp
  */
 
 #include "Z180ASCI.hpp"
@@ -244,8 +246,9 @@ void Z180ASCI::tdr_w(uint8_t data) {
         transmit_timer.adjust(bit_rate, 0, bit_rate);
 }
 
-// Retain the inherited model's receive-register write behavior: queue data
-// only when no byte is ready. This is a model behavior, not a documented serial input path.
+// Queue a receive-register write only when no byte is ready.
+// This write behavior comes from the MAME Z180 core; it is not a
+// documented serial input path.
 void Z180ASCI::rdr_w(uint8_t data) {
 
     if (!(asci_stat & Z180_STAT_RDRF))

@@ -8,7 +8,9 @@
  *   produce the result; main returns zero on success. Source: ROM_BEEF.asm
  *   Reset at https://github.com/jawaidbazyar2/secondsight ; keeping the display
  *   and electrically erasable configuration memory (EEPROM) is an application
- *   lifetime contract, not a CPU instruction rule.
+ *   lifetime contract, not a CPU instruction rule. Capture equations:
+ *   https://github.com/Webifi/second-sight-reference,
+ *   data/lattice/Lattice_v2.0.ldf.
  */
 
 // Replacing ROM/U7 Lattice chip at a restart keeps the live display and EEPROM objects.
@@ -37,8 +39,9 @@ int main() {
         assert(copier.copies == 64);
     }
     rom[0] = 0;
-    // A band flag is a level while CAPTURE and PH0 are high (v2.0 LDF
-    // 634-640): a $A4 read inside the window returns 1 and leaves it set; a
+    // A band flag is a level while CAPTURE and PH0 are high. The chip's
+    // equation listing, data/lattice/Lattice_v2.0.ldf, lines 634-640:
+    // a $A4 read inside the window returns 1 and leaves it set; a
     // read after PH0 falls clears it. A held copy reopens the window.
     {
         SSCapture capture;

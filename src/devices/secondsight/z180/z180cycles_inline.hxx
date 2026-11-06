@@ -6,20 +6,20 @@
  *
  *   PHI is the processor clock; half-PHI is one clock edge interval. Ti means
  *   an internal clock with no memory/port transfer. MMU means memory management
- *   unit, translating logical addresses to physical memory. A certified read
- *   means SSCard promises a stable pointer with no read side effect; its byte
+ *   unit, translating logical addresses to physical memory. For direct reads,
+ *   SSCard supplies a stable pointer with no read side effect; its byte
  *   still drives the emulated data bus. FRC is the free-running divider;
  *   PRTs are programmable reload timers. OMCR is the operation-mode control
  *   register, including the RETI (return from interrupt) bus-sequence choice.
- *   The test reference alone journals
- *   completed accesses so it can restart a handler without repeating effects.
+ *   Test execution records completed accesses so it can restart a handler
+ *   without repeating device effects.
  *
  *   Source: Zilog UM005004-0918 pp. 19-30 and Tables 51-52, pp. 251-280.
  *   Deferring clocks and bypassing callbacks are implementation choices, valid
  *   only within the next board deadline and with unchanged pins.
  */
 
-// Advance whole PHI and peripheral clocks within the admitted deadline (UM0050 pp. 86, 157-164).
+// Advance whole PHI and peripheral clocks up to the scheduler deadline (UM0050 pp. 86, 157-164).
 inline void Z180::cycle_clock_span(unsigned phi) {
     assert(!advance_left && icount >= int(2 * phi) && half_phi + 2 * phi <= timer_limit);
     icount -= 2 * phi;
@@ -134,9 +134,9 @@ inline void Z180::cycle_sample_stable_inputs() {
 }
 
 // Read the board-approved byte and drive the bus once. Address is logical;
-// the test engine records it for replay, while production retains no journal.
+// the test engine records it for replay; production does not retain it.
 [[gnu::always_inline]] inline uint8_t Z180::cycle_certified_read(cycle_kind kind, uint32_t address, uint8_t const *direct) {
-    // The granted interval excludes input changes and the page needs no
+    // Inputs stay fixed until the deadline, and the page needs no
     // device callback or external WAIT. Include programmed memory waits,
     // drive the bus once and retain the completed-cycle state.
     if (!fast_irq_valid)
@@ -156,7 +156,7 @@ inline void Z180::cycle_sample_stable_inputs() {
     if (prelude) {
         if (rcr & 0x80) {
             // Each Ti boundary may take a due refresh cycle; the access then
-            // composes only if it still fits and no refresh is due.
+            // uses the fast path only if it still fits and no refresh is due.
             for (unsigned n = 0; n < prelude; ++n)
                 cycle_transaction(cycle_kind::internal, 0, 0, family == Z180_TABLE_op && opcode == 0x10);
             ++bus_number;
@@ -176,11 +176,11 @@ inline void Z180::cycle_sample_stable_inputs() {
     return cycle_mapped_access(kind, address, physical, data);
 }
 
-// Perform a logical CPU access; the test reference can replay it. data is used for writes.
+// Perform a logical CPU access; test execution can replay it. data is used for writes.
 [[gnu::always_inline]] inline uint8_t Z180::cycle_access(cycle_kind kind, uint32_t address, uint8_t data) {
     unsigned const pre = cycle_prelude(kind);
-    // A whole-instruction proof also certifies subsequent memory cycles.
-    // Otherwise admit only this complete cycle before the next deadline.
+    // If the whole instruction fits before the deadline, its memory cycles do too.
+    // Otherwise check whether this cycle alone fits.
     bool const admitted = instruction_whole || (!cycle_observer && !cycle.active && cursor == history_count);
     if (admitted && instruction_fast && !trapping && !refresh_pending &&
         icount >= int(2 * (pre + 3 + memory_wait_states()))) {

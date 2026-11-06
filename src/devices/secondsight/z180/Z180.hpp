@@ -32,8 +32,10 @@
  *   pp. 55-64 for the MMU, pp. 65-115 for interrupts, refresh and DMA,
  *   pp. 116-164 for serial ports and timers, and pp. 251-280 for instruction
  *   bus sequences: https://www.zilog.com/docs/z180/um0050.pdf.
- *   The test continuation journal and fast paths are emulator mechanisms, not
- *   extra processor registers. K/N revision differences use Zilog TN0053
+ *   Test execution records completed bus accesses so a suspended instruction
+ *   can restart without repeating device effects. The fast paths and those
+ *   records are emulator mechanisms, not extra processor registers. K/N
+ *   revision differences use Zilog TN0053
  *   and the Z8S180 data sheets cited at the affected operation.
  */
 
@@ -111,7 +113,7 @@ public:
 #ifdef GS2_SS_TESTING
     // Select bus-cycle execution for fixtures; false uses the test-only instruction engine.
     void set_machine_cycle_engine(bool enabled) { cycle_engine = enabled; }
-    // Force one journaled transaction at a time for timing comparison fixtures.
+    // Select the test path that records one transaction at a time for replay.
     void set_machine_cycle_reference(bool enabled) { cycle_reference = enabled; }
 #endif
     // Return whether execution budgets count half-PHI bus edges.
@@ -129,7 +131,7 @@ public:
     // acknowledge DREQ at select assertion before the data transfer ends.
     // Observe external port-select edges. Callback arguments are port, write flag,
     // outgoing byte, and asserted select. Data transfer is a separate later edge
-    // (UM0050 pp. 17, 23); Second Sight acknowledges its copy request here.
+    // (UM0050 pp. 17, 23); Second Sight acknowledges its Apple event here.
     void set_io_strobe(std::function<void(uint32_t, bool, uint8_t, bool)> callback) { io_strobe = std::move(callback); }
     // Bind the board wait query: physical address/port, write flag and I/O flag
     // in; additional TW clocks out. The core combines these with DCNTL waits.
@@ -152,7 +154,7 @@ public:
     // Enable the test fixture switch for scheduled bus release and cycle timelines.
     void set_scheduled_timeline(bool enabled) { scheduled_timeline = enabled; }
 #endif
-    // Certify a physical page for direct reads and retain its data-bus drive
+    // Register a physical page for direct reads and retain its data-bus drive
     // side effect; changing the page invalidates logical read caches.
     // page is a physical 64-KiB page number 0-15; data must remain valid while
     // registered. bus and valid receive the last driven byte and its validity.
@@ -196,7 +198,7 @@ public:
     void stop_after_instruction() { run_soft_target = half_phi; }
     // True when no instruction handler remains active on the execution stack.
     bool at_instruction_boundary() const { return !instruction_active; }
-    // A reset is delivered at an exhausted grant. Its remaining ISA work
+    // A reset is delivered when CPU time runs out. The remaining instruction work
     // has no bus/time effects and is discarded by reset at retirement.
     void cancel_for_reset() {
         reset_cancelled = yield_requested = true;
@@ -211,7 +213,7 @@ public:
     bool has_execution_observer() const { return bool(trace) || bool(cycle_observer); }
 #ifdef GS2_SS_TESTING
     // Test-only inspection of a parked worker uses the same execution flag
-    // as a returned reference call. This flag is host bookkeeping, not a pin.
+    // as a returned test execution call. This flag is host bookkeeping, not a pin.
     bool park() { bool active = cycle_executing; cycle_executing = false; return active; }
     // Restore the execution flag saved by park() before resuming the worker.
     void unpark(bool active) { cycle_executing = active; }
@@ -222,7 +224,7 @@ public:
     // ends the run. Inside an active production handler, the callback must
     // instead wait for and grant later resolved time, within the hard limit;
     // an exhausted grant is an error. The test engine may yield there and
-    // resume from its journal. The callback must not execute this CPU recursively.
+    // resume from its access records. The callback must not execute this CPU recursively.
     void set_scheduler(std::function<uint64_t()> callback) {
         scheduler = std::move(callback);
         if (!scheduler)

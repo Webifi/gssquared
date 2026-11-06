@@ -30,8 +30,9 @@ static constexpr int      resshifts[8] = { 9, 10, 11, 12, 13, 14, 15, 16 };
 // thrown away first.
 static constexpr int32_t k_doc_makeup = 64;
 
-// The MC3340 control pin is filtered by SC41 22 uF and SC42 0.1 uF against the
-// ladder's 4.1k in parallel with the pin's own source, about 4.7k (data sheet
+// The MC3340 control pin is filtered by capacitors SC41 (22 uF) and SC42
+// (0.1 uF) against the ladder's 4.1k in parallel with the pin's own source,
+// about 4.7k (data sheet
 // Figs. 3 and 4): one pole of about 48 ms. The glide is applied to the gain.
 static constexpr float k_vol_slew_ms = 48.0f;
 

@@ -17,6 +17,8 @@
  *   inspection waits for that thread. Source: IBM VGA/XGA Technical Reference,
  *   May 1992, pp. 2-64 to 2-95 (CRTC, graphics and attribute registers). Oak
  *   OTI-087 databook pp. 39-44 adds upper address bits and wide-latch controls.
+ *   Register analysis: https://github.com/Webifi/second-sight-reference,
+ *   docs/14-custom-code.md.
  */
 
 #include "oti087.hpp"
@@ -113,8 +115,8 @@ uint8_t OTI087::crtc_read(unsigned offset) const {
         }
         case 0x10: {
             // Convention: no EGA light-pen alias when CRTC03 bit7 is clear.
-            // Return programmed 10/11 at every beam position. Second Sight
-            // reference, docs/14-custom-code.md, "The current line" (s122/123).
+            // Return programmed 10/11 at every beam position (second-sight-
+            // reference docs/14-custom-code.md, "The current line").
             return crtc.vert_retrace_start & 0xff;
         }
         case 0x11: {

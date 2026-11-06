@@ -12,7 +12,9 @@
  *   viewports and compares all native pixels before/after scan presentation.
  *   Small synthetic scans also check border, blanking and field pixels exactly.
  *   Source: ROM_BEEF.asm Apple video handlers and SetMode; the monitor's 4:3
- *   calibration is presentation policy, not an extra Oak register.
+ *   calibration is presentation policy, not an extra Oak register. Firmware
+ *   errata: https://github.com/Webifi/second-sight-reference,
+ *   docs/reference/errata.md.
  */
 
 #include "devices/secondsight/ss_card.hpp"
@@ -59,8 +61,9 @@ struct Host {
         // The reply is 0, then $A5 when the mode is set. ROM 1.4's main loop
         // reads its mode-change flag before its reply flag ($1A3B, $1E32), so a
         // SetMode between those reads gets an early $A5 within microseconds and
-        // the real one after the mode set's delay loop (Second Sight reference
-        // errata E29, fixed in firmware 1.5). Wait for $A5, then past the second.
+        // the real one after the mode set's delay loop (second-sight-reference
+        // docs/reference/errata.md, E29, fixed in firmware 1.5). Wait for $A5,
+        // then past the second.
         wait(0xa5);
         settle();
     }
@@ -195,8 +198,8 @@ static void check_rectangles() {
 }
 
 // Feed each real firmware raster through an unblanked scan window. This checks
-// active-region copying and source preservation; monitor-specific calibration
-// and SDL texture submission belong to display integration tests.
+// active-region copying and source preservation. It does not check monitor
+// calibration or SDL texture submission.
 static void check(Host &host, const char *name, int width, int height) {
     host.settle();
     auto &video = host.card.video();
@@ -239,7 +242,7 @@ static void check(Host &host, const char *name, int width, int height) {
         name, width, height, scan.width(), scan.height(), scan.active_regions().size(), before.size());
 }
 
-// Only the original supplied ROM is read; no media copies or external runtimes.
+// Read the supplied original firmware image.
 int main(int argc, char **argv) {
     // The optional selection permits a failed viewer handshake to be checked
     // without repeating the already completed Apple-mode cases.
