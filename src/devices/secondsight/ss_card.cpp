@@ -773,7 +773,6 @@ void SSCard::reset(uint64_t ticks, bool power_on) {
     prepare_reset();
     transfers.clear();
     queued_event = false;
-    observed_ticks = ticks;
     next_transfer_tick = ticks;
     phase_transfer = {};
     phase_decode = {};
@@ -1184,7 +1183,7 @@ uint64_t SSCard::process(megaii_transfer_t &transfer) {
     // observation fence bound the rest of this instruction (Apple IIgs
     // Technical Note 68, Fig. 2).
     const uint64_t fence = observation_limit.load(std::memory_order_acquire);
-    if (!worker && batch_execution && fence > transfer.ticks &&
+    if (!worker && fence > transfer.ticks &&
         !capture.pending && !capture.stall && !ack_selected &&
         card_time().floor_ticks(ticks_per_second) <= slot_high(transfer.ticks)) {
         direct_transfer.front() = transfer;
@@ -1360,7 +1359,6 @@ void SSCard::consume_progress() {
 
 // Meet the host at a frame/reset/debug boundary before reading shared state.
 void SSCard::catch_up(uint64_t ticks, bool wait) {
-    observed_ticks = ticks;
     dispatch(ticks, wait);
     if (wait) deliver_irq(ticks);
     queued_event = false;
@@ -1384,72 +1382,67 @@ uint64_t SSCard::run_transfers(std::vector<megaii_transfer_t> &queue, uint64_t t
         hard_limit > worker->known)
         throw std::runtime_error("Second Sight: retirement grant exceeds known host time");
     const auto hard = transfer_deadline(granted);
-    if (batch_execution) {
-        bool high = false;
-        while (next < queue.size() || card_time() < deadline) {
-            bool blocked = false;
-            auto scheduler = [&]() -> uint64_t {
-                const auto now = card_time();
-                service_card_deadlines(now);
-                if (next < queue.size()) {
-                    auto &transfer = queue[next];
-                    const auto input = transfer_deadline(slot_high(transfer.ticks));
-                    if (!high && now >= input) {
-                        // The in-stack path obeys the same first-half-PHI
-                        // input deadline as accept_transfer below it.
-                        if (now >= input + cpu->cycles_to_time(1))
-                            throw std::runtime_error("Second Sight: queued transfer high already passed: card " +
-                                std::to_string(now.floor_ticks(ticks_per_second)) + " high " +
-                                std::to_string(slot_high(transfer.ticks)) + " address " + std::to_string(transfer.address) +
-                                " entry " + std::to_string(next) + "/" + std::to_string(queue.size()) +
-                                " target " + std::to_string(target) + " worker " + std::to_string(bool(worker)));
-                        // ACK and feedback can make this access a held one.
-                        // No PH0 edge has been applied yet, so process() can
-                        // resume it without duplicating a copy or U2 Apple data-in latch clock.
-                        if (capture.pending || capture.stall || ack_selected) {
-                            blocked = true;
-                            return cpu->half_cycles();
-                        }
-                        bool started = false;
-                        transfer_rise(transfer, now, input, started, high);
+    bool high = false;
+    while (next < queue.size() || card_time() < deadline) {
+        bool blocked = false;
+        auto scheduler = [&]() -> uint64_t {
+            const auto now = card_time();
+            service_card_deadlines(now);
+            if (next < queue.size()) {
+                auto &transfer = queue[next];
+                const auto input = transfer_deadline(slot_high(transfer.ticks));
+                if (!high && now >= input) {
+                    // The in-stack path obeys the same first-half-PHI
+                    // input deadline as accept_transfer below it.
+                    if (now >= input + cpu->cycles_to_time(1))
+                        throw std::runtime_error("Second Sight: queued transfer high already passed: card " +
+                            std::to_string(now.floor_ticks(ticks_per_second)) + " high " +
+                            std::to_string(slot_high(transfer.ticks)) + " address " + std::to_string(transfer.address) +
+                            " entry " + std::to_string(next) + "/" + std::to_string(queue.size()) +
+                            " target " + std::to_string(target) + " worker " + std::to_string(bool(worker)));
+                    // ACK and feedback can make this access a held one.
+                    // No PH0 edge has been applied yet, so process() can
+                    // resume it without duplicating a copy or U2 Apple data-in latch clock.
+                    if (capture.pending || capture.stall || ack_selected) {
+                        blocked = true;
+                        return cpu->half_cycles();
                     }
-                    if (high && now >= transfer_deadline(transfer.ticks)) {
-                        if (capture.stall)
-                            throw std::runtime_error("Second Sight: queued access acquired RDY");
-                        transfer_fall(transfer, transfer_deadline(transfer.ticks), transfer.ticks, false);
-                        ++next;
-                        high = false;
-                    }
+                    bool started = false;
+                    transfer_rise(transfer, now, input, started, high);
                 }
-                auto end = limit_card_deadline(hard);
-                if (next < queue.size())
-                    end = std::min(end, transfer_deadline(high ? queue[next].ticks : slot_high(queue[next].ticks)));
-                return cpu->half_cycles() + (end > now ? (end - now).ceil_ticks(cpu_hz * 2) : 0);
-            };
-            cpu->set_scheduler(scheduler);
-            try {
-                const auto now = card_time();
-                const uint64_t soft = cpu->half_cycles() +
-                    (deadline > now ? (deadline - now).ceil_ticks(cpu_hz * 2) : 1);
-                cpu->run_half_until(soft, std::max(soft, cpu->half_cycles() +
-                    (hard > now ? (hard - now).ceil_ticks(cpu_hz * 2) : 0)));
-                // A retirement can land exactly on a fall; settle that edge
-                // before exposing its sampled byte, without running another instruction.
-                scheduler();
-            } catch (...) {
-                cpu->set_scheduler({});
-                throw;
+                if (high && now >= transfer_deadline(transfer.ticks)) {
+                    if (capture.stall)
+                        throw std::runtime_error("Second Sight: queued access acquired RDY");
+                    transfer_fall(transfer, transfer_deadline(transfer.ticks), transfer.ticks, false);
+                    ++next;
+                    high = false;
+                }
             }
+            auto end = limit_card_deadline(hard);
+            if (next < queue.size())
+                end = std::min(end, transfer_deadline(high ? queue[next].ticks : slot_high(queue[next].ticks)));
+            return cpu->half_cycles() + (end > now ? (end - now).ceil_ticks(cpu_hz * 2) : 0);
+        };
+        cpu->set_scheduler(scheduler);
+        try {
+            const auto now = card_time();
+            const uint64_t soft = cpu->half_cycles() +
+                (deadline > now ? (deadline - now).ceil_ticks(cpu_hz * 2) : 1);
+            cpu->run_half_until(soft, std::max(soft, cpu->half_cycles() +
+                (hard > now ? (hard - now).ceil_ticks(cpu_hz * 2) : 0)));
+            // A retirement can land exactly on a fall; settle that edge
+            // before exposing its sampled byte, without running another instruction.
+            scheduler();
+        } catch (...) {
             cpu->set_scheduler({});
-            advance_copy(card_time());
-            advance_vga();
-            if (blocked && process(queue[next++]))
-                throw std::runtime_error("Second Sight: queued RDY access escaped arbitration");
+            throw;
         }
-    }
-    for (; next < queue.size(); ++next)
-        if (process(queue[next]))
+        cpu->set_scheduler({});
+        advance_copy(card_time());
+        advance_vga();
+        if (blocked && process(queue[next++]))
             throw std::runtime_error("Second Sight: queued RDY access escaped arbitration");
+    }
     run_to(deadline);
     // Published progress is only the whole-tick part. Late-input and saved
     // input decisions above retain the exact half-PHI time instead.
@@ -1459,7 +1452,6 @@ uint64_t SSCard::run_transfers(std::vector<megaii_transfer_t> &queue, uint64_t t
 // Accept a Mega II transfer before the MMU completes it. Readback, IRQ and
 // possible RDY holds drain the queue; independent writes may be batched.
 uint64_t SSCard::observe(megaii_transfer_t &host_transfer) {
-    observed_ticks = host_transfer.ticks;
     // Virtual disk DMA may submit a whole block at one host tick. Mega II
     // can carry one byte per cycle: assign those bytes successive card-side
     // event times. This does not advance the IIgs clock or drop a byte.
@@ -1522,7 +1514,6 @@ uint64_t SSCard::observe(megaii_transfer_t &host_transfer) {
         // A later inspection must fence at the accepted fall after RDY.
         posted_through = std::max(posted_through, transfer.ticks + held);
         next_transfer_tick = next_slot_fall(transfer.ticks + held);
-        observed_ticks = host_transfer.ticks + held;
         deliver_irq(transfer.ticks + held);
         return held;
     }
@@ -1534,7 +1525,6 @@ uint64_t SSCard::observe(megaii_transfer_t &host_transfer) {
             pending_time_grant = true;
         }
         next_transfer_tick = next_slot_fall(transfer.ticks + held);
-        observed_ticks = host_transfer.ticks + held;
         host_transfer.data = transfer.data;
         host_transfer.driven = transfer.driven;
         deliver_irq(transfer.ticks + held);
@@ -1558,6 +1548,5 @@ uint64_t SSCard::observe(megaii_transfer_t &host_transfer) {
         transfers.push_back(transfer);
     }
     queued_event |= possible_event;
-    observed_ticks = host_transfer.ticks;
     return 0;
 }

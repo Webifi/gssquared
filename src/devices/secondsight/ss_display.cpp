@@ -23,59 +23,9 @@
 #include "util/SystemSettings.hpp"
 #include <algorithm>
 
-// Borrowed adapters are registered only for their lifetime. Inspection never
-// owns a display or changes the machine's existing module-state pointer.
-static std::vector<SecondSightDisplay *> displays;
-
-// Find the adapter attached to this machine, or null if it has no card display.
-// The returned pointer is borrowed and is used only on the main thread.
-SecondSightDisplay *SecondSightDisplay::for_computer(computer_t *computer) {
-    for (auto *display : displays) if (display->computer == computer) return display;
-    return nullptr;
-}
-
-// Suppress stale rectangles as soon as the selected monitor path is inactive.
-SecondSightDisplay::Presentation SecondSightDisplay::presentation(Path path) const {
-    const int view = SystemSettings::instance().ss_view();
-#if defined(__EMSCRIPTEN__)
-    const bool active = path == MAIN && view != SystemSettings::SS_VIEW_IIGS;
-#else
-    const bool active = path == MAIN ? view == SystemSettings::SS_VIEW_CARD : view == SystemSettings::SS_VIEW_BOTH;
-#endif
-    return active ? presentations[path] : Presentation{};
-}
-
-// Copy the accepted Oak raster and associated host time before preparing a
-// texture. Invalid/failed draws never replace a record with a valid rectangle.
-void SecondSightDisplay::begin_presentation(const Texture &texture) {
-    pending = {};
-    pending.sequence = ++presentation_sequence;
-    pending.host_ticks = computer->clock->get_c14m();
-    pending.timing = texture.timing;
-}
-
-// Store the coordinates used by the presenter, without recomputing geometry.
-// The optional after checksum reads the same raw cache, not a filtered texture.
-void SecondSightDisplay::finish_presentation(Path path, const SDL_FRect &viewport, const SDL_FRect &destination) {
-    pending.valid = true;
-    pending.viewport = viewport;
-    pending.destination = destination;
-    if (source_checksum) {
-        const auto &pixels = video.presentation_pixels();
-        const auto &timing = video.display_timing();
-        pending.after_width = timing.width;
-        pending.after_height = timing.height;
-        pending.after_bytes = pixels.size() * sizeof(uint32_t);
-        pending.after_crc = source_checksum(pixels.data(), pixels.size());
-        pending.checksummed = true;
-    }
-    presentations[path] = pending;
-}
-
 // Attach card rendering and input routing to the existing video system.
 SecondSightDisplay::SecondSightDisplay(computer_t *computer, SSCard &card)
     : computer(computer), card(card), video(card.video()) {
-    displays.push_back(this);
     computer->video_system->additional_display = [this]() { render(); };
     computer->video_system->additional_display_event = [this](const SDL_Event &event) {
         return handle_event(event);
@@ -84,7 +34,6 @@ SecondSightDisplay::SecondSightDisplay(computer_t *computer, SSCard &card)
 
 // Detach host callbacks before releasing textures and the optional monitor window.
 SecondSightDisplay::~SecondSightDisplay() {
-    displays.erase(std::remove(displays.begin(), displays.end(), this), displays.end());
     auto *vs = computer->video_system;
     vs->additional_window = nullptr;
     vs->additional_display = {};
@@ -151,7 +100,6 @@ SDL_Texture *SecondSightDisplay::prepare_texture(SDL_Renderer *dest, Texture &te
     // raster. Reject incomplete or excessive modes before allocating pixels.
     const auto &timing = video.display_timing();
     texture.timing = timing;
-    pending.timing = timing;
     if (timing.width < 1 || timing.height < 1 || timing.width > OTI087::MAX_FRAME_DIMENSION || timing.height > OTI087::MAX_FRAME_DIMENSION)
         return nullptr;
     bool full = last_renderer != dest;
@@ -234,16 +182,7 @@ SDL_Texture *SecondSightDisplay::prepare_texture(SDL_Renderer *dest, Texture &te
         ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_PIXELART);
     if (texture.odd) SDL_SetTextureScaleMode(texture.odd, computer->video_system->display_pixel_mode == DM_PIXEL_FUZZ
         ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_PIXELART);
-    // Only an explicit inspection request installs a source observer. It runs
-    // after rasterization and immediately before the real upload/filter path.
-    std::function<void(const uint32_t *, int, int)> before_upload;
-    if (source_checksum) before_upload = [this](const uint32_t *pixels, int w, int h) {
-        pending.before_width = w;
-        pending.before_height = h;
-        pending.before_bytes = size_t(w) * h * sizeof(uint32_t);
-        pending.before_crc = source_checksum(pixels, size_t(w) * h);
-    };
-    if (!video.upload_frame(texture.value, full, &texture.crt, texture.odd, before_upload)) return nullptr;
+    if (!video.upload_frame(texture.value, full, &texture.crt, texture.odd)) return nullptr;
     last_renderer = dest;
     // The existing Oak beam includes both fields. Select its current parity,
     // not a wall-clock counter, so pause and replay retain the same picture.
@@ -255,8 +194,8 @@ SDL_Texture *SecondSightDisplay::prepare_texture(SDL_Renderer *dest, Texture &te
 // Present the selected monitor(s) without altering card timing. Restore the
 // IIgs viewport and draw state after placing the card image.
 void SecondSightDisplay::render() {
-    // Claim the requested scan without joining its host-frame deadline. Exact
-    // inspection, the first texture and a missed whole frame still fence.
+    // Claim the requested scan without joining its host-frame deadline. A
+    // paused machine, the first texture and a missed whole frame still fence.
     // Every return releases ownership, including a hidden/failed monitor.
     struct Release {
         SSCard &card;
@@ -264,15 +203,13 @@ void SecondSightDisplay::render() {
     } release{card};
     auto *vs = computer->video_system;
     const int view = SystemSettings::instance().ss_view();
-    // Each render invalidates paths it does not draw, including failed uploads.
-    for (auto &record : presentations) record.valid = false;
     const uint64_t ticks = computer->clock->get_c14m();
 #if defined(__EMSCRIPTEN__)
     const bool missing_texture = !main_texture.value;
 #else
     const bool missing_texture = view == SystemSettings::SS_VIEW_BOTH ? !window_texture.value : !main_texture.value;
 #endif
-    const bool exact = source_checksum || missing_texture || missed_frame || computer->execution_mode != EXEC_NORMAL;
+    const bool exact = missing_texture || missed_frame || computer->execution_mode != EXEC_NORMAL;
     const bool refresh = view != SystemSettings::SS_VIEW_IIGS && card.begin_presentation(ticks, exact);
     missed_frame = view != SystemSettings::SS_VIEW_IIGS && !refresh;
 #if !defined(__EMSCRIPTEN__)
@@ -286,18 +223,14 @@ void SecondSightDisplay::render() {
             SDL_SetWindowRelativeMouseMode(window, mouse_captured);
         }
         SDL_RenderClear(renderer);
-        begin_presentation(window_texture);
-        bool submitted = false;
-        SDL_FRect viewport = {}, dest = {};
         if (auto *texture = prepare_texture(renderer, window_texture, refresh)) {
             int w, h;
             SDL_GetRenderOutputSize(renderer, &w, &h);
-            viewport = {0, 0, float(w), float(h)};
-            dest = frame_rect(viewport, vs->aspect_ratio);
+            const SDL_FRect dest = frame_rect({0, 0, float(w), float(h)}, vs->aspect_ratio);
             card_content = dest;
-            submitted = SDL_RenderTexture(renderer, texture, nullptr, &dest);
+            SDL_RenderTexture(renderer, texture, nullptr, &dest);
         }
-        if (SDL_RenderPresent(renderer) && submitted) finish_presentation(WINDOW, viewport, dest);
+        SDL_RenderPresent(renderer);
     } else if (visible) {
         vs->hide(window);
         visible = false;
@@ -318,8 +251,6 @@ void SecondSightDisplay::render() {
     SDL_GetRenderDrawBlendMode(vs->renderer, &blend);
     SDL_SetRenderDrawColor(vs->renderer, 0, 0, 0, 255);
     SDL_SetRenderDrawBlendMode(vs->renderer, SDL_BLENDMODE_NONE);
-    begin_presentation(main_texture);
-    const auto viewport = vs->target;
     if (auto *texture = prepare_texture(vs->renderer, main_texture, refresh)) {
         SDL_FRect source = {0, 0, float(main_texture.width), float(main_texture.height)};
         // The texture contains active pixels and overscan at one sample scale.
@@ -328,10 +259,9 @@ void SecondSightDisplay::render() {
         // The opaque complete scan covers it; avoid a redundant fill beneath
         // every browser frame. A missing card signal still clears it below.
         vs->render_frame(texture, &source, nullptr);
-        card_content = vs->content;
         // render_frame receives no destination adjustment or content inset;
         // its retained content is the exact SDL_RenderTexture destination.
-        finish_presentation(MAIN, viewport, vs->content);
+        card_content = vs->content;
     } else {
         SDL_RenderFillRect(vs->renderer, &vs->target);
     }

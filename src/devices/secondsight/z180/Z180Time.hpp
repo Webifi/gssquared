@@ -25,8 +25,6 @@
 #include <cstdint>
 #include <functional>
 #include <cmath>
-#include <istream>
-#include <ostream>
 
 // A value containing an emulated instant or duration. Arithmetic returns new
 // values; it neither advances a device nor schedules a host-thread callback.
@@ -81,12 +79,6 @@ public:
     int64_t seconds() const { return whole + (whole < 0 && fraction != 0); }
     // Signed remainder after seconds(), in units of 10^-18 seconds.
     int64_t attoseconds() const { return whole < 0 && fraction ? fraction - units_per_second : fraction; }
-    // Clamp to one second for callers that need a bounded fractional duration.
-    int64_t as_attoseconds() const {
-        if (whole >= 1) return units_per_second;
-        if (whole < -1) return -units_per_second;
-        return whole * units_per_second + fraction;
-    }
     // Convert integer time for the VGA model with nearest-even binary64 rounding.
     double as_seconds() const {
         // Preserve the binary64 integer-conversion rounding before division.
@@ -192,10 +184,6 @@ public:
     friend bool operator<=(Z180Time a, Z180Time b) { return !(b < a); }
     // True when a is no earlier than b.
     friend bool operator>=(Z180Time a, Z180Time b) { return !(a < b); }
-    // Checkpoints encode time as one signed 128-bit attosecond count.
-    void save(std::ostream &stream) const { auto value = raw(); stream.write((const char *)&value, sizeof(value)); }
-    // Restore the signed count; the owning device checks stream failure.
-    void load(std::istream &stream) { __int128 value = 0; stream.read((char *)&value, sizeof(value)); *this = from_raw(value); }
 
 private:
     // Temporary unsigned 128-bit value for rounding, local to this call/thread.

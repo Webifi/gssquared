@@ -108,25 +108,12 @@ public:
     // Replace the time constant high byte with data and recalculate baud periods (UM0050 pp. 143-146).
     void astch_w(uint8_t data);
 
-    // Set the receive-pin level (0/1); the receiver samples it on its clock.
-    void rxa_wr(int state);
-    // Set CTS pin level state (0/1) and recompute transmit-ready status (UM0050 pp. 138-139).
-    void cts_wr(int state);
-    // Set DCD pin level state (0/1); only channel 0 has carrier gating (UM0050 pp. 138-139).
-    void dcd_wr(int state);
-    // Apply external clock level state (0/1). Falling edges clock transmit; rising
-    // edges clock receive after their selected divisions (UM0050 pp. 141-146).
-    void cka_wr(int state);
 
     // Return nonzero if an enabled transmit/receive condition requests a CPU interrupt (UM0050 p. 140).
     [[gnu::always_inline]] int check_interrupt() const {
         uint8_t const rx = (asci_stat & ((ext && (asci_ext & 0x80)) ? 0x70 : 0xf0)) | (id ? 0 : (asci_stat & 4));
         return ((asci_stat & 3) == 3) || ((asci_stat & 8) && rx);
     }
-#ifdef GS2_SS_TESTING
-    // ASCI IRQ is level-derived, so acknowledging it here has no effect.
-    void clear_interrupt() {}
-#endif
     // Return receive-ready when receive is true, otherwise transmit-ready; no byte is consumed (UM0050 p. 120).
     bool dma_request(bool receive) const { return (asci_stat & (receive ? 0x80 : 2)) != 0; }
 

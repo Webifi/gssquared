@@ -58,13 +58,10 @@ public:
     bool display_write(uint8_t rs) const {
         return (rs & 3) == 2 || ((rs & 3) == 1 && addr_rgb == 2);
     }
-    // Set the physical palette-width pin; high permits eight-bit components.
-    void set_6_8_pin(bool state) { pin_6_8 = state; }
     // Read Command A without changing the hidden-access counter.
     uint8_t command_r() const { return cra; }
-    // Debugger copies of Command B and masks (Brooktree L481A_C pp. 14-20).
+    // Debugger copies of the masks (Brooktree L481A_C pp. 14-20).
     // These bypass the indirect-address and hidden-command read sequences.
-    uint8_t command_b() const { return indirect_read(2); }
     uint8_t pixel_mask() const { return indirect_read(0); }
     uint8_t overlay_pixel_mask() const { return overlay_mask; }
     // Decode an explicit indirect index without selecting it or consuming DAC

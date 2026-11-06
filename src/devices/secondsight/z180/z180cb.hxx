@@ -23,9 +23,9 @@
  *   subtraction and carry. PHI is the processor clock; a T-state is one PHI.
  *   The decoder supplies base timing; helpers add conditional/repeat timing.
  *   Empty self-load handlers still consume clocks. A trap is the processor's
- *   entry to address zero for an undefined instruction. Z80 helpers for
- *   unsupported encodings remain here, but the Z180 decoder
- *   rejects them before execution.
+ *   entry to address zero for an undefined instruction. The decoder traps
+ *   every encoding the Z180 rejects before a handler runs, so this file has
+ *   handlers only for the encodings it accepts.
  *
  *   Sources: Zilog UM005004-0918 pp. 173-183 for registers/addressing,
  *   pp. 211-236 for operations, pp. 247-250 for valid encodings, and
@@ -282,46 +282,6 @@ OP(cb, 2f) {
     a8 = SRA(a8);
 }
 
-// Retained Z80 helper: Shift B left, inserting one. Set carry from the outgoing bit and flags
-// from the result. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(cb, 30) {
-    b8 = SLL(b8);
-}
-// Retained Z80 helper: Shift C left, inserting one. Set carry from the outgoing bit and flags
-// from the result. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(cb, 31) {
-    c8 = SLL(c8);
-}
-// Retained Z80 helper: Shift D left, inserting one. Set carry from the outgoing bit and flags
-// from the result. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(cb, 32) {
-    d8 = SLL(d8);
-}
-// Retained Z80 helper: Shift E left, inserting one. Set carry from the outgoing bit and flags
-// from the result. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(cb, 33) {
-    e8 = SLL(e8);
-}
-// Retained Z80 helper: Shift H left, inserting one. Set carry from the outgoing bit and flags
-// from the result. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(cb, 34) {
-    h8 = SLL(h8);
-}
-// Retained Z80 helper: Shift L left, inserting one. Set carry from the outgoing bit and flags
-// from the result. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(cb, 35) {
-    l8 = SLL(l8);
-}
-// Retained Z80 helper: Shift memory at HL left, inserting one. Set carry from the outgoing bit
-// and flags from the result. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(cb, 36) {
-    WM(hl16, SLL(RM(hl16)));
-}
-// Retained Z80 helper: Shift A left, inserting one. Set carry from the outgoing bit and flags
-// from the result. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(cb, 37) {
-    a8 = SLL(a8);
-}
 
 // Shift B right, inserting zero. Set carry from the outgoing bit and flags from the result.
 // (UM0050 pp. 216-220).

@@ -9,9 +9,10 @@
  *   register; TRDR is the unbuffered transmit/receive data register.
  *
  *   The CPU internal-port decoder calls these register methods. The CPU
- *   scheduler calls dispatch for internal-clock edges; cks_wr accepts external
- *   clock edges. Output callbacks report changed voltage levels. Second Sight
- *   leaves these serial outputs unconnected, but its CPU still has the registers.
+ *   scheduler calls dispatch for internal-clock edges; this board model drives
+ *   no external clock or data input. Output callbacks report changed voltage
+ *   levels. Second Sight leaves these serial outputs unconnected, but its CPU
+ *   still has the registers.
  *   The Z180 owns this device and all methods run on its execution thread.
  *
  *   PHI is the processor clock. A deadline is an emulated instant, not host
@@ -47,10 +48,6 @@ public:
     std::function<void(bool)> cks_cb, txs_cb;
     bool side_effects_disabled = false;
     bool io_stopped = false;
-    // Accept external clock voltage state (0/1); only a changed level advances external-clock mode.
-    void cks_wr(int state);
-    // Store received-data voltage state (0/1) for the next rising CKS sample (UM0050 pp. 155-156).
-    void rxs_wr(int state);
     // Return control/status with reserved bit 3 zero; reading does not acknowledge completion (p. 149).
     // trdr_r returns the data byte and clears completion unless peeking (p. 151).
     uint8_t cntr_r(), trdr_r();

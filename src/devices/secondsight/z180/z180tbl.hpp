@@ -126,63 +126,6 @@ static const uint8_t *const cc_default[6] = {cc_op, cc_cb, cc_ed, cc_xy, cc_xycb
 #define Z180_TABLE_dd Z180_TABLE_xy
 #define Z180_TABLE_fd Z180_TABLE_xy
 
-#define TABLE(prefix)                                                                                                  \
-    {&Z180::prefix##_00, &Z180::prefix##_01, &Z180::prefix##_02, &Z180::prefix##_03, &Z180::prefix##_04,               \
-     &Z180::prefix##_05, &Z180::prefix##_06, &Z180::prefix##_07, &Z180::prefix##_08, &Z180::prefix##_09,               \
-     &Z180::prefix##_0a, &Z180::prefix##_0b, &Z180::prefix##_0c, &Z180::prefix##_0d, &Z180::prefix##_0e,               \
-     &Z180::prefix##_0f, &Z180::prefix##_10, &Z180::prefix##_11, &Z180::prefix##_12, &Z180::prefix##_13,               \
-     &Z180::prefix##_14, &Z180::prefix##_15, &Z180::prefix##_16, &Z180::prefix##_17, &Z180::prefix##_18,               \
-     &Z180::prefix##_19, &Z180::prefix##_1a, &Z180::prefix##_1b, &Z180::prefix##_1c, &Z180::prefix##_1d,               \
-     &Z180::prefix##_1e, &Z180::prefix##_1f, &Z180::prefix##_20, &Z180::prefix##_21, &Z180::prefix##_22,               \
-     &Z180::prefix##_23, &Z180::prefix##_24, &Z180::prefix##_25, &Z180::prefix##_26, &Z180::prefix##_27,               \
-     &Z180::prefix##_28, &Z180::prefix##_29, &Z180::prefix##_2a, &Z180::prefix##_2b, &Z180::prefix##_2c,               \
-     &Z180::prefix##_2d, &Z180::prefix##_2e, &Z180::prefix##_2f, &Z180::prefix##_30, &Z180::prefix##_31,               \
-     &Z180::prefix##_32, &Z180::prefix##_33, &Z180::prefix##_34, &Z180::prefix##_35, &Z180::prefix##_36,               \
-     &Z180::prefix##_37, &Z180::prefix##_38, &Z180::prefix##_39, &Z180::prefix##_3a, &Z180::prefix##_3b,               \
-     &Z180::prefix##_3c, &Z180::prefix##_3d, &Z180::prefix##_3e, &Z180::prefix##_3f, &Z180::prefix##_40,               \
-     &Z180::prefix##_41, &Z180::prefix##_42, &Z180::prefix##_43, &Z180::prefix##_44, &Z180::prefix##_45,               \
-     &Z180::prefix##_46, &Z180::prefix##_47, &Z180::prefix##_48, &Z180::prefix##_49, &Z180::prefix##_4a,               \
-     &Z180::prefix##_4b, &Z180::prefix##_4c, &Z180::prefix##_4d, &Z180::prefix##_4e, &Z180::prefix##_4f,               \
-     &Z180::prefix##_50, &Z180::prefix##_51, &Z180::prefix##_52, &Z180::prefix##_53, &Z180::prefix##_54,               \
-     &Z180::prefix##_55, &Z180::prefix##_56, &Z180::prefix##_57, &Z180::prefix##_58, &Z180::prefix##_59,               \
-     &Z180::prefix##_5a, &Z180::prefix##_5b, &Z180::prefix##_5c, &Z180::prefix##_5d, &Z180::prefix##_5e,               \
-     &Z180::prefix##_5f, &Z180::prefix##_60, &Z180::prefix##_61, &Z180::prefix##_62, &Z180::prefix##_63,               \
-     &Z180::prefix##_64, &Z180::prefix##_65, &Z180::prefix##_66, &Z180::prefix##_67, &Z180::prefix##_68,               \
-     &Z180::prefix##_69, &Z180::prefix##_6a, &Z180::prefix##_6b, &Z180::prefix##_6c, &Z180::prefix##_6d,               \
-     &Z180::prefix##_6e, &Z180::prefix##_6f, &Z180::prefix##_70, &Z180::prefix##_71, &Z180::prefix##_72,               \
-     &Z180::prefix##_73, &Z180::prefix##_74, &Z180::prefix##_75, &Z180::prefix##_76, &Z180::prefix##_77,               \
-     &Z180::prefix##_78, &Z180::prefix##_79, &Z180::prefix##_7a, &Z180::prefix##_7b, &Z180::prefix##_7c,               \
-     &Z180::prefix##_7d, &Z180::prefix##_7e, &Z180::prefix##_7f, &Z180::prefix##_80, &Z180::prefix##_81,               \
-     &Z180::prefix##_82, &Z180::prefix##_83, &Z180::prefix##_84, &Z180::prefix##_85, &Z180::prefix##_86,               \
-     &Z180::prefix##_87, &Z180::prefix##_88, &Z180::prefix##_89, &Z180::prefix##_8a, &Z180::prefix##_8b,               \
-     &Z180::prefix##_8c, &Z180::prefix##_8d, &Z180::prefix##_8e, &Z180::prefix##_8f, &Z180::prefix##_90,               \
-     &Z180::prefix##_91, &Z180::prefix##_92, &Z180::prefix##_93, &Z180::prefix##_94, &Z180::prefix##_95,               \
-     &Z180::prefix##_96, &Z180::prefix##_97, &Z180::prefix##_98, &Z180::prefix##_99, &Z180::prefix##_9a,               \
-     &Z180::prefix##_9b, &Z180::prefix##_9c, &Z180::prefix##_9d, &Z180::prefix##_9e, &Z180::prefix##_9f,               \
-     &Z180::prefix##_a0, &Z180::prefix##_a1, &Z180::prefix##_a2, &Z180::prefix##_a3, &Z180::prefix##_a4,               \
-     &Z180::prefix##_a5, &Z180::prefix##_a6, &Z180::prefix##_a7, &Z180::prefix##_a8, &Z180::prefix##_a9,               \
-     &Z180::prefix##_aa, &Z180::prefix##_ab, &Z180::prefix##_ac, &Z180::prefix##_ad, &Z180::prefix##_ae,               \
-     &Z180::prefix##_af, &Z180::prefix##_b0, &Z180::prefix##_b1, &Z180::prefix##_b2, &Z180::prefix##_b3,               \
-     &Z180::prefix##_b4, &Z180::prefix##_b5, &Z180::prefix##_b6, &Z180::prefix##_b7, &Z180::prefix##_b8,               \
-     &Z180::prefix##_b9, &Z180::prefix##_ba, &Z180::prefix##_bb, &Z180::prefix##_bc, &Z180::prefix##_bd,               \
-     &Z180::prefix##_be, &Z180::prefix##_bf, &Z180::prefix##_c0, &Z180::prefix##_c1, &Z180::prefix##_c2,               \
-     &Z180::prefix##_c3, &Z180::prefix##_c4, &Z180::prefix##_c5, &Z180::prefix##_c6, &Z180::prefix##_c7,               \
-     &Z180::prefix##_c8, &Z180::prefix##_c9, &Z180::prefix##_ca, &Z180::prefix##_cb, &Z180::prefix##_cc,               \
-     &Z180::prefix##_cd, &Z180::prefix##_ce, &Z180::prefix##_cf, &Z180::prefix##_d0, &Z180::prefix##_d1,               \
-     &Z180::prefix##_d2, &Z180::prefix##_d3, &Z180::prefix##_d4, &Z180::prefix##_d5, &Z180::prefix##_d6,               \
-     &Z180::prefix##_d7, &Z180::prefix##_d8, &Z180::prefix##_d9, &Z180::prefix##_da, &Z180::prefix##_db,               \
-     &Z180::prefix##_dc, &Z180::prefix##_dd, &Z180::prefix##_de, &Z180::prefix##_df, &Z180::prefix##_e0,               \
-     &Z180::prefix##_e1, &Z180::prefix##_e2, &Z180::prefix##_e3, &Z180::prefix##_e4, &Z180::prefix##_e5,               \
-     &Z180::prefix##_e6, &Z180::prefix##_e7, &Z180::prefix##_e8, &Z180::prefix##_e9, &Z180::prefix##_ea,               \
-     &Z180::prefix##_eb, &Z180::prefix##_ec, &Z180::prefix##_ed, &Z180::prefix##_ee, &Z180::prefix##_ef,               \
-     &Z180::prefix##_f0, &Z180::prefix##_f1, &Z180::prefix##_f2, &Z180::prefix##_f3, &Z180::prefix##_f4,               \
-     &Z180::prefix##_f5, &Z180::prefix##_f6, &Z180::prefix##_f7, &Z180::prefix##_f8, &Z180::prefix##_f9,               \
-     &Z180::prefix##_fa, &Z180::prefix##_fb, &Z180::prefix##_fc, &Z180::prefix##_fd, &Z180::prefix##_fe,               \
-     &Z180::prefix##_ff}
-
-const Z180::opcode_func Z180::opcodes[Z180_PREFIX_COUNT][0x100] = {TABLE(op), TABLE(cb), TABLE(dd),
-                                                                   TABLE(ed), TABLE(fd), TABLE(xycb)};
-
 /***************************************************************
  * define an opcode function
  ***************************************************************/
@@ -210,17 +153,12 @@ static constexpr uint16_t valid_index[16] = {0x0200, 0x0200, 0x0e0e, 0x0270, 0x4
 
 // Define a decoder returning nominal PHI for opcode_arg. valid is the
 // silicon validity rule; third selects the indexed third-byte trap sequence.
-// Both dispatch mechanisms call the same handler and use the same timing row.
 #define EXEC_PROTOTYPE(prefix, valid, third)                                                                           \
     int Z180::exec##_##prefix(const uint8_t opcode_arg) {                                                              \
-        if (cycle_executing)                                                                                           \
-            cycle_decode(Z180_TABLE_##prefix, opcode_arg);                                                             \
+        cycle_decode(Z180_TABLE_##prefix, opcode_arg);                                                                 \
         if (!(valid))                                                                                                  \
             return take_trap(third);                                                                                   \
-        if (cycle_executing && !cycle_reference) {                                                                     \
-            Z180_DIRECT_DISPATCH(prefix)                                                                               \
-        } else                                                                                                         \
-            (this->*opcodes[Z180_PREFIX_##prefix][opcode_arg])();                                                      \
+        Z180_DIRECT_DISPATCH(prefix)                                                                                   \
         return cc[Z180_TABLE_##prefix][opcode_arg];                                                                    \
     }
 

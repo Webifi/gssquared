@@ -169,8 +169,6 @@ bool SystemSettings::load() {
     host_fst_dir_.clear();
     apple_keys_ = apple_key_layout_id(default_apple_key_layout());
 
-    // Rewrite the legacy Second Sight chip key after a successful load.
-    bool migrate_lattice = false;
     const std::string path = settings_path();
     if (!file_exists(path)) {
         return true;
@@ -226,11 +224,8 @@ bool SystemSettings::load() {
         if (const auto* ss = table["second_sight"].as_table()) {
             const std::string firmware = (*ss)["firmware"].value_or("1.4");
             ss_firmware_ = firmware == "2.0" ? SS_FW_20 : firmware == "1.5" ? SS_FW_15 : SS_FW_14;
-            // Prefer the named Second Sight Lattice-chip key; accept the legacy
-            // key only if that field is absent.
-            const auto lattice = (*ss)["lattice_chip"].value<std::string>();
-            migrate_lattice = !lattice && (*ss).contains("u7");
-            ss_lattice_v2_ = lattice.value_or((*ss)["u7"].value_or("original")) == "v2.0";
+            const std::string lattice = (*ss)["lattice_chip"].value_or("original");
+            ss_lattice_v2_ = lattice == "v2.0";
             ss_int0_pullup_ = (*ss)["int0_pullup"].value_or(false);
         }
         if (const auto* display = table["display"].as_table()) {
@@ -273,8 +268,7 @@ bool SystemSettings::load() {
     }
 
     prune_missing();
-    // Persist the named Second Sight chip key only when migration was needed.
-    return migrate_lattice ? save() : true;
+    return true;
 }
 
 bool SystemSettings::save() const {

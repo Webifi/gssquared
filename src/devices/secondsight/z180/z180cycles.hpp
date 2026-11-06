@@ -85,13 +85,6 @@ struct instruction_state {
     uint32_t regs[12]{};
     uint8_t control[9]{};
 };
-#ifdef GS2_SS_TESTING
-bool cycle_engine = false;
-bool cycle_reference = false;
-#else
-static constexpr bool cycle_engine = true;
-static constexpr bool cycle_reference = false;
-#endif
 bool cycle_executing = false;
 bool instruction_fast = false;
 // Recheck whether the rest of the instruction can use the fast path after
@@ -104,7 +97,6 @@ bool instruction_active = false;
 // that fit do not test this flag; reset drains the remaining handler without clocks.
 bool reset_cancelled = false;
 bool scheduler_in_handler = false;
-bool wait_line = false;
 bool bus_ack = false;
 bool sampled_bus_request = false;
 bool boundary_allowed = true;
@@ -130,8 +122,6 @@ uint64_t timer_deadline = UINT64_MAX;
 uint64_t timer_limit = UINT64_MAX;
 uint64_t budget_end = 0;
 uint64_t retired = 0;
-uint64_t fast_instructions = 0;
-uint64_t resumptions = 0;
 cycle_job cycle;
 #ifdef GS2_SS_TESTING
 instruction_state instruction_start;
@@ -185,16 +175,12 @@ void cycle_update_direct_reads();
 // Return a stable byte pointer for physical address, or null when the board
 // has not supplied that 64-KiB page. A18 may be driven by the timer output.
 uint8_t const *cycle_direct_read(uint32_t address) const {
-    if (cycle_reference || !direct_reads_enabled)
+    if (!direct_reads_enabled)
         return nullptr;
     address = a18_tout_address(address);
     uint8_t const *const page = direct_read[(address >> 16) & 15];
     return page ? page + (address & 0xffff) : nullptr;
 }
-#ifdef GS2_SS_TESTING
-// Run the test-only whole-instruction engine for comparison.
-void execute_legacy();
-#endif
 // Consume the half-PHI budget, resuming incomplete instructions and servicing bus owners.
 void execute_machine_cycles();
 // Apply LDD pointer/count/flag changes after byte data reaches the destination (UM0050 p. 225).
@@ -367,36 +353,3 @@ void cycle_sample_interrupts();
 // Notify the board once that return-from-interrupt completed; test replay stays silent.
 void cycle_reti();
 
-// Checkpoints contain fields, never C++ struct padding. Padding can differ
-// between the in-stack scheduler and a resumed handler even with equal state.
-// Pass each retained field to io for either reading or writing. The callback
-// returns no value; the owning save/load routine checks its stream status.
-template <typename IO> void checkpoint_continuation(IO &&io) {
-    io(cycle.kind);
-    io(cycle.owner);
-    io(cycle.address);
-    io(cycle.data);
-    io(cycle.phase);
-    io(cycle.waits);
-    io(cycle.elapsed);
-    io(cycle.nominal);
-    io(cycle.trailing);
-    io(cycle.io_select_edge);
-    io(cycle.active);
-    io(cycle.sampled);
-    io(cycle.ttp);
-    io(cycle.no_arbitration);
-#ifdef GS2_SS_TESTING
-    io(instruction_start.regs);
-    io(instruction_start.control);
-#endif
-
-#ifdef GS2_SS_TESTING
-    for (auto &h : history) {
-        io(h.kind);
-        io(h.address);
-        io(h.data);
-        io(h.nominal);
-    }
-#endif
-}

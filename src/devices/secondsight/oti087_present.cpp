@@ -18,16 +18,12 @@
 
 // Upload changed rows after rasterization; a new SDL texture requires a full
 // copy even if the emulated VRAM has not changed.
-bool OTI087::upload_frame(SDL_Texture *texture, bool full, SecondSightCrt *crt, SDL_Texture *odd_texture,
-    const std::function<void(const uint32_t *, int, int)> &before_upload) {
+bool OTI087::upload_frame(SDL_Texture *texture, bool full, SecondSightCrt *crt, SDL_Texture *odd_texture) {
     int const width = timing.width, height = timing.height;
     // The texture contains the monitor window, including optional scanlines.
     // full forces upload even when the cached image is unchanged.
     frame_pixels.resize(width * height);
     render_frame({frame_pixels.data(), width, height, width});
-    // Explicit observers see the native source before any host filtering or
-    // upload. Ordinary presentation supplies no observer and does no hashing.
-    if (before_upload) before_upload(frame_pixels.data(), width, height);
     if (full || width != present_width || height != present_height) {
         present_top = 0;
         present_bottom = height - 1;

@@ -606,15 +606,6 @@ uint8_t Z180::SRA(uint8_t value) {
     return res;
 }
 
-// Retained Z80 helper: shift value left, insert one and set result flags.
-// The Z180 decoder traps this unsupported encoding (UM0050 pp. 68-72, 249).
-uint8_t Z180::SLL(uint8_t value) {
-    unsigned res = value;
-    unsigned c = (res & 0x80) ? CF : 0;
-    res = ((res << 1) | 0x01) & 0xff;
-    f8 = SZP[res] | c;
-    return res;
-}
 
 // Return value shifted right with zero inserted; bit 0 becomes carry.
 // Set sign/zero/parity from the result (UM0050 pp. 218-219).

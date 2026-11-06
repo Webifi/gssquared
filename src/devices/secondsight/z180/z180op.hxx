@@ -23,9 +23,9 @@
  *   subtraction and carry. PHI is the processor clock; a T-state is one PHI.
  *   The decoder supplies base timing; helpers add conditional/repeat timing.
  *   Empty self-load handlers still consume clocks. A trap is the processor's
- *   entry to address zero for an undefined instruction. Z80 helpers for
- *   unsupported encodings remain here, but the Z180 decoder
- *   rejects them before execution.
+ *   entry to address zero for an undefined instruction. The decoder traps
+ *   every encoding the Z180 rejects before a handler runs, so this file has
+ *   handlers only for the encodings it accepts.
  *
  *   Sources: Zilog UM005004-0918 pp. 173-183 for registers/addressing,
  *   pp. 211-236 for operations, pp. 247-250 for valid encodings, and

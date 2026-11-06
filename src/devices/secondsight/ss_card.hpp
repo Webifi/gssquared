@@ -108,10 +108,6 @@ public:
     // Host thread, after every Mega II access before ticks has been observed:
     // let the card thread run through ticks without waiting for a request.
     void publish_time(uint64_t ticks);
-#ifdef GS2_SS_TESTING
-    // Fixture switch: execute each transfer separately when disabled.
-    void set_batching(bool enabled) { batch_execution = enabled; }
-#endif
     // CPU bus callbacks: physical 20-bit byte addresses, with device side effects.
     uint8_t memory_read(uint32_t address);
     // Drive data and store through the same physical address decoder as reads.
@@ -153,12 +149,6 @@ public:
     // logic: either low pulls XSYNC low (second-sight-reference
     // docs/07-glue-logic.md, "U12: AppleColor RGB timing").
     int composite_sync() { return vga.hsync_r() & vga.vsync_r(); }
-    // True maps ROM over the low 128 KiB while firmware starts up.
-    bool overlay_enabled() const { return rom_overlay; }
-    // Last observed host tick, including any returned RDY wait.
-    uint64_t host_ticks() const { return observed_ticks; }
-    // Host ticks per second; used to convert Apple time to processor time.
-    uint64_t host_tick_rate() const { return ticks_per_second; }
     // Diagnostic totals: copied bytes, firmware events, held accesses, held ticks.
     uint64_t copies = 0, events = 0, stalls = 0, stall_ticks = 0;
     // Host-thread callback: true asserts the card interrupt on the Apple CPU.
@@ -252,16 +242,10 @@ private:
     // IRQ collection and delivery are separate from this clock update.
     void consume_progress();
     bool queued_event = false;
-#ifdef GS2_SS_TESTING
-    bool batch_execution = true;
-#else
-    static constexpr bool batch_execution = true;
-#endif
     bool rom_overlay = true, vga_half = false, linear = false, rgb = false, apple_irq = false;
     uint8_t bus_data = 0xff, host_output = 0;
     bool bus_valid = false;
     uint64_t ticks_per_second;
-    uint64_t observed_ticks = 0;
     std::atomic<uint64_t> observation_limit{0};
     // Reuse the direct access slot; no allocation belongs in a host bus cycle.
     std::vector<megaii_transfer_t> direct_transfer{megaii_transfer_t{}};

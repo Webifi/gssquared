@@ -288,63 +288,6 @@ void Z180ASCI::update_tdre() {
         asci_stat &= ~Z180_STAT_TDRE;
 }
 
-// Set CTS pin level state (0/1) and recompute transmit-ready status (UM0050 pp. 138-139).
-void Z180ASCI::cts_wr(int state) {
-    cts = state;
-    update_tdre();
-}
-
-// Set DCD pin level state (0/1); only channel 0 has carrier gating (UM0050 pp. 138-139).
-void Z180ASCI::dcd_wr(int state) {
-    if (id)
-        return;
-    dcd = state;
-    if (state) {
-        asci_stat |= Z180_STAT_DCD0;
-        if (!ext || !(asci_ext & Z180_ASEXT_DCD0)) {
-            rx_enabled = false;
-            rx_state = STATE_START;
-            fifo_count = fifo_wr = fifo_rd = 0;
-            fifo_overrun = false;
-            asci_stat &= ~0xf0;
-            asci_ext &= ~Z180_ASEXT_BRK_DET;
-        }
-    }
-}
-
-// Set the receive-pin level (0/1); the receiver samples it on its clock.
-void Z180ASCI::rxa_wr(int state) {
-    rxa = state;
-
-}
-
-// Apply external clock level state (0/1). Falling edges clock transmit; rising
-// edges clock receive after their selected divisions (UM0050 pp. 141-146).
-void Z180ASCI::cka_wr(int state) {
-    // For channel 1, CKA can be disabled
-    if (id && (asci_cntla & Z180_CNTLA1_CKA1D))
-        return;
-
-    if (state != clock_state) {
-        clock_state = state;
-        if (!state) {
-            tx_counter++;
-            if (tx_counter != divisor)
-                return;
-            tx_counter = 0;
-            if (asci_cntla & Z180_CNTLA_TE)
-                transmit_edge();
-        } else {
-            rx_counter++;
-            if (rx_counter != rx_count_to)
-                return;
-            rx_counter = 0;
-            if (rx_enabled && (asci_cntla & Z180_CNTLA_RE))
-                receive_edge();
-        }
-    }
-}
-
 // Build the transmit shift register from start, data, parity/multiprocessor and stop bits (UM0050 pp. 130-133).
 void Z180ASCI::prepare_tsr() {
     int bits = (asci_cntla & Z180_CNTLA_MODE_DATA) ? 8 : 7;

@@ -654,14 +654,6 @@ uint8_t OTI087::io_r(uint32_t port, bool effects) {
     return value;
 }
 
-// Inspect VRAM without changing VGA latches, readiness or bus-visible state.
-uint8_t OTI087::peek_memory(uint32_t address) {
-    side_effects = false;
-    uint8_t value = bus_memory_r(address);
-    side_effects = true;
-    return value;
-}
-
 // Perform a selected bus read and report its access wait requirement.
 ss_video_access_t OTI087::memory_read(uint32_t address) {
     uint32_t offset;

@@ -838,8 +838,9 @@ if(NOT EMSCRIPTEN)
     add_subdirectory(apps/gs2packtest)
 
     add_subdirectory(apps/ssgputexttest)
-    # Exact half-clock fixtures need the reference continuation, which is not
-    # part of the production worker. Keep its different class layout isolated.
+    # The exact half-clock test fixtures build the CPU with GS2_SS_TESTING, which
+    # adds test-only stepping and replay state. Keep that class layout out of
+    # the production library.
     add_library(gs2_devices_secondsight_test
         src/devices/secondsight/ss_card.cpp
         src/devices/secondsight/z180/Z180.cpp

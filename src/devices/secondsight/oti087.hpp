@@ -180,8 +180,6 @@ public:
     uint8_t memory_r(uint32_t address, bool half) { return bus_memory_r(card_address(address, half)); }
     // Write through the board window with the same half-select translation.
     void memory_w(uint32_t address, bool half, uint8_t data) { bus_memory_w(card_address(address, half), data); }
-    // Debugger read that leaves video latches and readiness unchanged.
-    uint8_t peek_memory(uint32_t address);
     // Raw display-byte inspection, bypassing CPU aperture and latch effects.
     uint8_t mem_linear_r(uint32_t address) const { return linear_byte(address); }
     // Raw display-byte store, bypassing CPU aperture and latch effects.
@@ -192,16 +190,10 @@ public:
         output_divider = bool(state);
         recompute_params();
     }
-    // Select the board linear-address input used by convenience window accesses.
-    void linear_address_w(int state) { linear_address = bool(state); }
     // Cable sense: nonzero=AppleColor RGB, zero=VGA; read by mode-setting firmware.
     void monitor_type_w(int applecolor) { monitor_override = !applecolor; }
     // Selected pixel oscillator frequency in Hz (Oak OTI-068 frequency table p. 7).
     uint32_t vclk_hz() const;
-    // Board video-memory clock frequency, independent of the selected pixel clock.
-    static constexpr uint32_t mclk_hz() { return 40000000; }
-    // Read Oak AT-bus zero-wait enable, extended $13 bit 3 (databook p. 39).
-    bool at_zero_wait_enabled() const { return ext[0x13] & 8; }
     // Read the write cache enable, extended $22 bit 3 (databook p. 42).
     bool write_cache_enabled() const { return ext[0x22] & 8; }
     // An optional longer access delay also holds IOCHRDY for that duration.
@@ -211,8 +203,6 @@ public:
     double access_wait(bool write = false) const {
         return std::max(access_delay, double(write ? 3 : 2) / 18000000);
     }
-    // IOCHRDY (I/O channel ready) is high once the modelled access delay expires.
-    bool iochrdy_r() const { return now >= ready_until; }
     // Whether the enabled vertical interrupt latch requests service.
     bool cint_r() const { return crtc.irq_latch && !crtc.irq_disable; }
     // Electrical vertical-sync output after Oak polarity/test controls.
@@ -246,11 +236,7 @@ public:
     // An optional host CRT filter receives completed pixels, never chip state.
     // odd_texture retains the other field when the output look separates fields.
     bool upload_frame(SDL_Texture *texture, bool full = false,
-        class SecondSightCrt *crt = nullptr, SDL_Texture *odd_texture = nullptr,
-        const std::function<void(const uint32_t *, int, int)> &before_upload = {});
-    // Borrow the last raw raster on the synchronized render thread. A test
-    // observer may inspect it around presentation; filters never own this data.
-    const std::vector<uint32_t> &presentation_pixels() const { return frame_pixels; }
+        class SecondSightCrt *crt = nullptr, SDL_Texture *odd_texture = nullptr);
     // Read-only interlace flag for host field presentation (Oak $14 bit 7).
     bool display_interlaced() const { return get_interlace_mode(); }
 
@@ -361,7 +347,7 @@ private:
     uint8_t test_data = 0xff;
     bool packed_scanout = false;
     bool rendering_snapshot = false;
-    bool output_divider = false, linear_address = false, side_effects = true;
+    bool output_divider = false, side_effects = true;
     int monitor_override = -1;
     Bt481 ramdac;
     SerialEEPROM93C46 eeprom;
@@ -541,7 +527,7 @@ private:
     bool scan_test() const { return (ext[3] & 0x87) == 0x85; }
     // Combine the board half-select with the Z180 VGA aperture address.
     uint32_t card_address(uint32_t address, bool half) const {
-        return (address & 0x7ffff) | (half ? 0x80000 : 0) | (linear_address ? 0x100000 : 0);
+        return (address & 0x7ffff) | (half ? 0x80000 : 0);
     }
     // Test whether address selects the configured aperture. On true, write
     // the translated offset; write selects read versus write bank (Oak pp. 42-46).
@@ -627,16 +613,7 @@ public:
     uint8_t extended_read(unsigned offset, bool backing = false) const;
     const auto &crtc_state() const { return crtc; }
     const auto &sequencer_state() const { return sequencer; }
-    const auto &graphics_state() const { return gc; }
-    const auto &attribute_state() const { return attribute; }
-    // Extended bytes are backing storage, not live pin/status port responses.
-    uint8_t extended_register(unsigned reg) const { return extended_read(reg, true); }
-    uint8_t extended_index() const { return index; }
     uint8_t misc_output() const { return miscellaneous_output; }
     // Cable sense: true when a VGA monitor is attached.
     bool vga_monitor() const { return (monitor_override < 0 ? 1 : monitor_override) & 1; }
-    uint8_t feature_control_r() const { return feature_control; }
-    // Board inputs are copied as stored; neither accessor changes address decode.
-    bool output_divided() const { return output_divider; }
-    bool linear_address_enabled() const { return linear_address; }
 };

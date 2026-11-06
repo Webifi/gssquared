@@ -32,25 +32,6 @@ public:
     // Detach callbacks, then release the owned textures and secondary window.
     ~SecondSightDisplay();
 
-    // Last submitted production draw, owned and read on the render thread.
-    // This host record is not a card register or a serialized wire structure.
-    struct Presentation {
-        bool valid = false, checksummed = false;
-        uint64_t sequence = 0, host_ticks = 0;
-        SDL_FRect viewport = {}, destination = {};
-        ss_video_timing_t timing;
-        uint32_t before_width = 0, before_height = 0, before_bytes = 0, before_crc = 0;
-        uint32_t after_width = 0, after_height = 0, after_bytes = 0, after_crc = 0;
-    };
-    enum Path { MAIN = 0, WINDOW = 1 };
-    // Find the borrowed adapter for a live machine; no cross-thread access.
-    static SecondSightDisplay *for_computer(computer_t *computer);
-    // Return a value snapshot; a currently inactive path is always invalid.
-    Presentation presentation(Path path) const;
-    // External tests may install a checksum only for one paused presentation.
-    // Null by default: no source walk, allocation or CRC cost in normal use.
-    uint32_t (*source_checksum)(const uint32_t *, size_t) = nullptr;
-
     // Match video_system_t::calculate_target_rect: one centered aspect fit for
     // the complete monitor window. Sampling/cropping belongs to the scan, so
     // active video and its overscan can never receive different scale factors.
@@ -94,13 +75,7 @@ private:
     bool out_of_range = false, lock_candidate = true;
     uint64_t lock_since = 0;
 
-    // Two small retained draw records; pending is private until submission.
-    std::array<Presentation, 2> presentations;
-    Presentation pending;
-    uint64_t presentation_sequence = 0;
     bool missed_frame = false;
-    void begin_presentation(const Texture &texture);
-    void finish_presentation(Path path, const SDL_FRect &viewport, const SDL_FRect &destination);
 
     // Draw the selected monitor layout from the synchronized card frame.
     void render();

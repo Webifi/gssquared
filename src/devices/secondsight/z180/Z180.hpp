@@ -110,23 +110,10 @@ public:
         uint64_t tstates;
     };
 
-#ifdef GS2_SS_TESTING
-    // Select bus-cycle execution for fixtures; false uses the test-only instruction engine.
-    void set_machine_cycle_engine(bool enabled) { cycle_engine = enabled; }
-    // Select the test path that records one transaction at a time for replay.
-    void set_machine_cycle_reference(bool enabled) { cycle_reference = enabled; }
-#endif
-    // Return whether execution budgets count half-PHI bus edges.
-    bool machine_cycle_engine() const { return cycle_engine; }
     // Return the asserted BUSACK output; the board may own the bus only while true (UM0050 pp. 26-27).
     bool bus_acknowledged() const { return bus_ack; }
     // Convert phi whole processor clocks into an emulated duration at the current divider.
-    Z180Time phi_time(unsigned phi) const { return cycles_to_time(phi * (cycle_engine ? 2 : 1)); }
-    // Invalidate direct execution when the external WAIT pin changes.
-    void wait_w(bool asserted) {
-        instruction_fast = false;
-        wait_line = asserted;
-    }
+    Z180Time phi_time(unsigned phi) const { return cycles_to_time(phi * 2); }
     // IORQ edges, separate from the T3 data sample/write. A board may
     // acknowledge DREQ at select assertion before the data transfer ends.
     // Observe external port-select edges. Callback arguments are port, write flag,
@@ -144,16 +131,6 @@ public:
     }
     // Observe asserted/deasserted BUSACK so SSCard can start or stop its bus transfer.
     void set_busack(std::function<void(bool)> callback) { busack_cb = std::move(callback); }
-#ifdef GS2_SS_TESTING
-    // Select the test-only instruction timing comparison path.
-    void set_instruction_boundary_timing(bool v) { instruction_boundary_timing = v; }
-#endif
-    // Return completed instruction/interrupt-handler entries for debugger stepping.
-    uint64_t retired_instructions() const { return retired; }
-#ifdef GS2_SS_TESTING
-    // Enable the test fixture switch for scheduled bus release and cycle timelines.
-    void set_scheduled_timeline(bool enabled) { scheduled_timeline = enabled; }
-#endif
     // Register a physical page for direct reads and retain its data-bus drive
     // side effect; changing the page invalidates logical read caches.
     // page is a physical 64-KiB page number 0-15; data must remain valid while
@@ -165,13 +142,6 @@ public:
         direct_read_valid = valid ? valid : &direct_read_valid_default;
         instruction_fast = false;
         cycle_update_direct_reads();
-    }
-    // Remove all host-pointer shortcuts before remapping or restoring bus state.
-    void clear_direct_read_pages() {
-        direct_read.fill(nullptr);
-        direct_logical.fill(nullptr);
-        direct_read_bus = nullptr;
-        instruction_fast = false;
     }
 
     // K and N select documented silicon revisions; N adds clock multiplier
@@ -206,11 +176,6 @@ public:
         icount = 0;
         stop_after_instruction();
     }
-    // True only if the scheduler was called outside an active handler.
-    bool scheduler_at_boundary() const { return !scheduler_in_handler && !instruction_active; }
-    // Trace consumers cannot undo a callback. The board grants only resolved
-    // time while either observer is attached; the emulated CPU is unchanged.
-    bool has_execution_observer() const { return bool(trace) || bool(cycle_observer); }
 #ifdef GS2_SS_TESTING
     // Test-only inspection of a parked worker uses the same execution flag
     // as a returned test execution call. This flag is host bookkeeping, not a pin.
@@ -240,8 +205,6 @@ public:
     bool schedule_board_edge(uint64_t half_deadline);
     // Return whether this grant has a pending board edge.
     bool board_edge_scheduled() const { return board_edge_at != UINT64_MAX; }
-    // Run to target whole PHI since reset; converts to the half-PHI interface.
-    void run_until(uint64_t target) { run_half_until(target * 2); }
     // Stop the current grant at the next safe return to the board scheduler.
     void request_yield() {
         yield_requested = true;
@@ -258,7 +221,7 @@ public:
     // Return elapsed half-PHI for scheduling a board event between clock edges.
     uint64_t half_cycles() const { return half_phi; }
     // Half-PHI periods since the last rising PHI edge, for board logic registered on PHI.
-    unsigned phi_phase() const { return cycle_engine ? phi_half : 0; }
+    unsigned phi_phase() const { return phi_half; }
     // Return current PHI clocks per second after CMR/CCR division (UM0050 pp. 49-52).
     uint32_t clock_hz() const;
     // Set the logical asserted state of an interrupt or DMA-request pin.
@@ -280,8 +243,6 @@ public:
         instruction_fast = false;
         bus_released = true;
     }
-    // Return the timer output level that can replace address bit A18 (UM0050 p. 164).
-    bool tout() const { return tout_level; }
     // Return true in either HALT or SLP; these states have different clock and wake rules.
     bool halted() const { return HALT != 0; }
     // Substitute timer output on the multiplexed A18/TOUT pin when selected
@@ -292,7 +253,7 @@ public:
     // Return a debugger register snapshot; it excludes peripherals and partial-cycle state.
     State get_state() const;
     // Apply debugger registers. The tstates member is informational and does
-    // not rewind the scheduler. Use load for a complete execution checkpoint.
+    // not rewind the scheduler.
     void set_state(const State &state);
     // Translate logical address a through the cached MMU page map (UM0050 pp. 58-64).
     uint32_t physical_address(uint16_t a) const { return mmu[a >> 12] | (a & 4095); }
@@ -303,8 +264,6 @@ public:
     void write_register(uint8_t reg, uint8_t value) { z180_internal_port_write(reg & 0x3f, value); }
     // Return the CPU-owned ASCI channel (ch low bit selects 0/1); use only on the execution thread.
     Z180ASCI &serial(unsigned ch) { return asci[ch & 1]; }
-    // Return the CPU-owned clocked serial port; use only on the execution thread.
-    Z180CSIO &clocked_serial() { return csio; }
     // Optional synchronous debugger hook before instruction execution. The
     // snapshot is temporary; a hook must copy it to retain it.
     std::function<void(const State &)> trace;
@@ -315,10 +274,6 @@ public:
     Z180Time cycles_to_time(uint64_t n) const;
     // Return complete execution ticks in duration t, rounded down.
     uint64_t time_to_cycles(Z180Time t) const;
-    // Write a same-build CPU/peripheral checkpoint; return 0 on success, 1 on stream failure.
-    int save(std::ostream &out);
-    // Restore a same-build checkpoint; return 0 on success, 1 on format/revision/read failure.
-    int load(std::istream &in);
 
 private:
     Bus bus;
@@ -328,11 +283,6 @@ private:
     std::function<uint64_t()> scheduler;
     uint64_t run_target = 0;
     uint64_t run_soft_target = UINT64_MAX;
-#ifdef GS2_SS_TESTING
-    bool scheduled_timeline = true;
-#else
-    static constexpr bool scheduled_timeline = true;
-#endif
     uint64_t scheduler_limit = 0, board_edge_at = UINT64_MAX;
     std::function<void()> board_edge;
     // Service the board and serial deadlines; return true only when another
@@ -344,22 +294,14 @@ private:
     uint64_t attoseconds_per_cycle = 0;
     Z180ASCI asci[2] = {Z180ASCI(0), Z180ASCI(1)};
     Z180CSIO csio;
-    uint8_t cmr = 0, ccr = 0, rtemp = 0;
-    uint32_t ioltemp = 0;
+    uint8_t cmr = 0, ccr = 0;
     int icount = 0, extra_cycles = 0;
     const uint8_t *cc[6]{};
-#ifdef GS2_SS_TESTING
-    bool instruction_boundary_timing = false;
-#endif
     // Advance stopped-clock SLP or its wake delay. Return true if this call
     // consumed the interval without ordinary CPU execution (UM0050 pp. 37-41).
     bool run_low_power();
     uint8_t power_mode = 0;
     uint32_t wake_remaining = 0;
-#ifdef GS2_SS_TESTING
-    // Test-only duration, in whole PHI, of one halted instruction-engine step.
-    int halt_cycles() const;
-#endif
     // The N multiplier is valid only for 10-16 MHz EXTAL with CMR.X2 set
     // (Z8S180 data sheet DS006002, clock multiplier section).
     bool clock_multiplier_enabled() const {
@@ -367,8 +309,6 @@ private:
     }
     // Convert oscillator clocks to execution ticks, using the active engine units.
     uint64_t clocks_to_cycles(uint64_t n) const;
-    // Convert execution ticks to enough oscillator clocks, rounding upward.
-    uint64_t cycles_to_clocks(uint64_t n) const;
     // Record elapsed time at the old clock rate before changing its divider.
     void prepare_deferred_clock_change();
     // Rebase serial clocks and notify the board so its next deadline uses the new PHI rate.
@@ -382,7 +322,7 @@ private:
     // Read one physical 20-bit byte through the board callback; an unwired bus returns 0xff.
     uint8_t read_memory(uint32_t a) {
 #ifdef GS2_SS_TESTING
-        if (cycle_engine && !cycle_reference) sync_timers();
+        sync_timers();
 #endif
         return bus.memory_read ? bus.memory_read(a & 0xfffff) : 0xff;
     }
@@ -390,7 +330,7 @@ private:
     // Write byte d at physical address a modulo 1 MiB if the board has a write callback.
     void write_memory(uint32_t a, uint8_t d) {
 #ifdef GS2_SS_TESTING
-        if (cycle_engine && !cycle_reference) sync_timers();
+        sync_timers();
 #endif
         if (bus.memory_write)
             bus.memory_write(a & 0xfffff, d);
@@ -398,14 +338,14 @@ private:
     // Read an external 16-bit port; return 0xff if the board has no read callback.
     uint8_t read_io(uint16_t a) {
 #ifdef GS2_SS_TESTING
-        if (cycle_engine && !cycle_reference) sync_timers();
+        sync_timers();
 #endif
         return bus.io_read ? bus.io_read(a) : 0xff;
     }
     // Write byte d to an external 16-bit port. Internal registers are decoded before this call.
     void write_io(uint16_t a, uint8_t d) {
 #ifdef GS2_SS_TESTING
-        if (cycle_engine && !cycle_reference) sync_timers();
+        sync_timers();
 #endif
         if (bus.io_write)
             bus.io_write(a, d);

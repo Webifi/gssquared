@@ -23,9 +23,9 @@
  *   subtraction and carry. PHI is the processor clock; a T-state is one PHI.
  *   The decoder supplies base timing; helpers add conditional/repeat timing.
  *   Empty self-load handlers still consume clocks. A trap is the processor's
- *   entry to address zero for an undefined instruction. Z80 helpers for
- *   unsupported encodings remain here, but the Z180 decoder
- *   rejects them before execution.
+ *   entry to address zero for an undefined instruction. The decoder traps
+ *   every encoding the Z180 rejects before a handler runs, so this file has
+ *   handlers only for the encodings it accepts.
  *
  *   NMI is the non-maskable interrupt; INT0 is the first maskable input.
  *   M1 identifies an opcode fetch. IOCR controls internal I/O and CCR the
@@ -37,11 +37,6 @@
  *   pp. 251-280 for bus ordering. Page citations below use printed pages.
  */
 
-// Retained invalid-prefix diagnostic helper. Reads the offending bytes for the diagnostic call;
-// the Z180 decoder traps before these fallback handlers (UM0050 pp. 68-72).
-OP(illegal, 2) {
-    z180_diagnostic("Z180 '%s' ill. opcode_arg $ed $%02x\n", "Z180", read_memory((pc32 - 1) & 0xffff));
-}
 
 /**********************************************************
  * special opcodes (ED prefix)
@@ -59,29 +54,9 @@ OP(ed, 01) {
     unsigned n = ARG();
     OUT(n, b8);
 }
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 02) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 03) {
-    illegal_2();
-}
 // Set flags from A AND B without changing either operand. (UM0050 p. 214).
 OP(ed, 04) {
     TST(b8);
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 05) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 06) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 07) {
-    illegal_2();
 }
 
 // Read the immediate 8-bit port into C. Set sign/zero/parity and preserve carry. (UM0050 pp.
@@ -96,29 +71,9 @@ OP(ed, 09) {
     unsigned n = ARG();
     OUT(n, c8);
 }
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 0a) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 0b) {
-    illegal_2();
-}
 // Set flags from A AND C without changing either operand. (UM0050 p. 214).
 OP(ed, 0c) {
     TST(c8);
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 0d) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 0e) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 0f) {
-    illegal_2();
 }
 
 // Read the immediate 8-bit port into D. Set sign/zero/parity and preserve carry. (UM0050 pp.
@@ -133,29 +88,9 @@ OP(ed, 11) {
     unsigned n = ARG();
     OUT(n, d8);
 }
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 12) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 13) {
-    illegal_2();
-}
 // Set flags from A AND D without changing either operand. (UM0050 p. 214).
 OP(ed, 14) {
     TST(d8);
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 15) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 16) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 17) {
-    illegal_2();
 }
 
 // Read the immediate 8-bit port into E. Set sign/zero/parity and preserve carry. (UM0050 pp.
@@ -170,29 +105,9 @@ OP(ed, 19) {
     unsigned n = ARG();
     OUT(n, e8);
 }
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 1a) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 1b) {
-    illegal_2();
-}
 // Set flags from A AND E without changing either operand. (UM0050 p. 214).
 OP(ed, 1c) {
     TST(e8);
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 1d) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 1e) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 1f) {
-    illegal_2();
 }
 
 // Read the immediate 8-bit port into H. Set sign/zero/parity and preserve carry. (UM0050 pp.
@@ -207,29 +122,9 @@ OP(ed, 21) {
     unsigned n = ARG();
     OUT(n, h8);
 }
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 22) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 23) {
-    illegal_2();
-}
 // Set flags from A AND H without changing either operand. (UM0050 p. 214).
 OP(ed, 24) {
     TST(h8);
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 25) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 26) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 27) {
-    illegal_2();
 }
 
 // Read the immediate 8-bit port into L. Set sign/zero/parity and preserve carry. (UM0050 pp.
@@ -244,29 +139,9 @@ OP(ed, 29) {
     unsigned n = ARG();
     OUT(n, l8);
 }
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 2a) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 2b) {
-    illegal_2();
-}
 // Set flags from A AND L without changing either operand. (UM0050 p. 214).
 OP(ed, 2c) {
     TST(l8);
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 2d) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 2e) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 2f) {
-    illegal_2();
 }
 
 // Read the immediate 8-bit port; discard the byte but update flags. (UM0050 pp. 231-234).
@@ -275,35 +150,9 @@ OP(ed, 30) {
     uint8_t res = IN(n);
     f8 = (f8 & CF) | SZP[res];
 }
-// Retained Z80 helper: Write zero to the immediate 8-bit port. The Z180 decoder traps this
-// encoding (UM0050 pp. 68-72, 247-250).
-OP(ed, 31) {
-    unsigned n = ARG();
-    OUT(n, 0);
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 32) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 33) {
-    illegal_2();
-}
 // Set flags from A AND memory at HL without changing either operand. (UM0050 p. 214).
 OP(ed, 34) {
     TST(RM(hl16));
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 35) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 36) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 37) {
-    illegal_2();
 }
 
 // Read the immediate 8-bit port into A. Set sign/zero/parity and preserve carry. (UM0050 pp.
@@ -318,29 +167,9 @@ OP(ed, 39) {
     unsigned n = ARG();
     OUT(n, a8);
 }
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 3a) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 3b) {
-    illegal_2();
-}
 // Set flags from A AND A without changing either operand. (UM0050 p. 214).
 OP(ed, 3c) {
     TST(a8);
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 3d) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 3e) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 3f) {
-    illegal_2();
 }
 
 // Read the 16-bit port BC into B. Set sign/zero/parity and preserve carry. (UM0050 pp.
@@ -412,11 +241,6 @@ OP(ed, 4c) {
 OP(ed, 4d) {
     RETI;
 }
-// Retained Z80 helper: Select INT0 interrupt mode 0. Other interrupt sources retain their fixed
-// vector rules. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(ed, 4e) {
-    IM = 0;
-}
 // Copy A to R. (UM0050 pp. 222-224).
 OP(ed, 4f) {
     LD_R_A;
@@ -441,16 +265,6 @@ OP(ed, 52) {
 OP(ed, 53) {
     ea = ARG16();
     WM16(ea, &DE);
-}
-// Retained Z80 helper: Replace A with zero minus A and set subtraction flags. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(ed, 54) {
-    NEG;
-}
-// Retained Z80 helper: Pop the return PC and restore the interrupt enable saved on NMI entry.
-// The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(ed, 55) {
-    RETN;
 }
 // Select INT0 interrupt mode 1. Other interrupt sources retain their fixed vector rules.
 // (UM0050 pp. 75-86, 235).
@@ -486,11 +300,6 @@ OP(ed, 5b) {
 // pair. (UM0050 p. 221).
 OP(ed, 5c) {
     MLT(DE);
-}
-// Retained Z80 helper: Pop the return PC and signal return-from-interrupt to the board; M1 mode
-// may add refetch cycles. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(ed, 5d) {
-    RETI;
 }
 // Select INT0 interrupt mode 2. Other interrupt sources retain their fixed vector rules.
 // (UM0050 pp. 75-86, 235).
@@ -528,16 +337,6 @@ OP(ed, 64) {
     unsigned m = ARG();
     TST(m);
 }
-// Retained Z80 helper: Pop the return PC and restore the interrupt enable saved on NMI entry.
-// The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(ed, 65) {
-    RETN;
-}
-// Retained Z80 helper: Select INT0 interrupt mode 0. Other interrupt sources retain their fixed
-// vector rules. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(ed, 66) {
-    IM = 0;
-}
 // Rotate four-bit digits right between A's low digit and memory at HL; preserve carry. (UM0050
 // p. 218).
 OP(ed, 67) {
@@ -569,16 +368,6 @@ OP(ed, 6b) {
 OP(ed, 6c) {
     MLT(HL);
 }
-// Retained Z80 helper: Pop the return PC and signal return-from-interrupt to the board; M1 mode
-// may add refetch cycles. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(ed, 6d) {
-    RETI;
-}
-// Retained Z80 helper: Select INT0 interrupt mode 0. Other interrupt sources retain their fixed
-// vector rules. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(ed, 6e) {
-    IM = 0;
-}
 // Rotate four-bit digits left between A's low digit and memory at HL; preserve carry. (UM0050
 // p. 218).
 OP(ed, 6f) {
@@ -589,11 +378,6 @@ OP(ed, 6f) {
 OP(ed, 70) {
     uint8_t res = IN(bc16);
     f8 = (f8 & CF) | SZP[res];
-}
-// Retained Z80 helper: Write 0 to the 16-bit port BC. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-OP(ed, 71) {
-    OUT(bc16, 0);
 }
 // Subtract SP and carry from HL. Store the wrapped result and update 16-bit arithmetic flags.
 // (UM0050 p. 221).
@@ -612,19 +396,10 @@ OP(ed, 74) {
     unsigned m = ARG();
     f8 = HF | SZP[IN(c8) & m];
 }
-// Retained Z80 helper: Pop the return PC and restore the interrupt enable saved on NMI entry.
-// The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(ed, 75) {
-    RETN;
-}
 // Enter SLP; clock stopping and wake delay depend on IOCR/CCR and silicon revision. (UM0050 pp.
 // 34-41, 235).
 OP(ed, 76) {
     SLP;
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 77) {
-    illegal_2();
 }
 
 // Read the 16-bit port BC into A. Set sign/zero/parity and preserve carry. (UM0050 pp.
@@ -652,157 +427,31 @@ OP(ed, 7b) {
 OP(ed, 7c) {
     MLT(SP);
 }
-// Retained Z80 helper: Pop the return PC and signal return-from-interrupt to the board; M1 mode
-// may add refetch cycles. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(ed, 7d) {
-    RETI;
-}
-// Retained Z80 helper: Select INT0 interrupt mode 2. Other interrupt sources retain their fixed
-// vector rules. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-OP(ed, 7e) {
-    IM = 2;
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 7f) {
-    illegal_2();
-}
 
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 80) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 81) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 82) {
-    illegal_2();
-}
 // Write memory at HL to port C; decrement B and increment HL. Move C in the same direction.
 // (UM0050 pp. 232-234).
 OP(ed, 83) {
     OTIM;
 }
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 84) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 85) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 86) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 87) {
-    illegal_2();
-}
 
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 88) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 89) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 8a) {
-    illegal_2();
-}
 // Write memory at HL to port C; decrement B and decrement HL. Move C in the same direction.
 // (UM0050 pp. 232-234).
 OP(ed, 8b) {
     OTDM;
 }
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 8c) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 8d) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 8e) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 8f) {
-    illegal_2();
-}
 
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 90) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 91) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 92) {
-    illegal_2();
-}
 // Write memory at HL to port C; decrement B and increment HL. Move C in the same direction.
 // Repeat until B reaches zero; PC backs up so each byte remains interruptible. (UM0050 pp.
 // 232-234).
 OP(ed, 93) {
     OTIMR;
 }
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 94) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 95) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 96) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 97) {
-    illegal_2();
-}
 
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 98) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 99) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 9a) {
-    illegal_2();
-}
 // Write memory at HL to port C; decrement B and decrement HL. Move C in the same direction.
 // Repeat until B reaches zero; PC backs up so each byte remains interruptible. (UM0050 pp.
 // 232-234).
 OP(ed, 9b) {
     OTDMR;
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 9c) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 9d) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 9e) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, 9f) {
-    illegal_2();
 }
 
 // Copy one byte from HL to DE; increment both addresses and decrement BC. (UM0050 p. 225).
@@ -821,22 +470,6 @@ OP(ed, a2) {
 OP(ed, a3) {
     OUTI;
 }
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, a4) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, a5) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, a6) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, a7) {
-    illegal_2();
-}
 
 // Copy one byte from HL to DE; decrement both addresses and decrement BC. (UM0050 p. 225).
 OP(ed, a8) {
@@ -853,22 +486,6 @@ OP(ed, aa) {
 // Read memory at HL, decrement B, then write to port BC and decrement HL. (UM0050 pp. 232-234).
 OP(ed, ab) {
     OUTD;
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, ac) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, ad) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, ae) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, af) {
-    illegal_2();
 }
 
 // Copy one byte from HL to DE; increment both addresses and decrement BC. Repeat by backing up
@@ -891,22 +508,6 @@ OP(ed, b2) {
 OP(ed, b3) {
     OTIR;
 }
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, b4) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, b5) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, b6) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, b7) {
-    illegal_2();
-}
 
 // Copy one byte from HL to DE; decrement both addresses and decrement BC. Repeat by backing up
 // PC while BC is nonzero, allowing interrupts between bytes. (UM0050 p. 225).
@@ -928,283 +529,11 @@ OP(ed, ba) {
 OP(ed, bb) {
     OTDR;
 }
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, bc) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, bd) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, be) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, bf) {
-    illegal_2();
-}
 
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, c0) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, c1) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, c2) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, c3) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, c4) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, c5) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, c6) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, c7) {
-    illegal_2();
-}
 
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, c8) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, c9) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, ca) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, cb) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, cc) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, cd) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, ce) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, cf) {
-    illegal_2();
-}
 
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, d0) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, d1) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, d2) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, d3) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, d4) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, d5) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, d6) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, d7) {
-    illegal_2();
-}
 
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, d8) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, d9) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, da) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, db) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, dc) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, dd) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, de) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, df) {
-    illegal_2();
-}
 
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, e0) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, e1) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, e2) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, e3) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, e4) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, e5) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, e6) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, e7) {
-    illegal_2();
-}
 
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, e8) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, e9) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, ea) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, eb) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, ec) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, ed) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, ee) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, ef) {
-    illegal_2();
-}
 
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, f0) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, f1) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, f2) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, f3) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, f4) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, f5) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, f6) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, f7) {
-    illegal_2();
-}
 
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, f8) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, f9) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, fa) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, fb) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, fc) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, fd) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, fe) {
-    illegal_2();
-}
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-OP(ed, ff) {
-    illegal_2();
-}

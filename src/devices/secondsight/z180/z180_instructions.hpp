@@ -17,8 +17,8 @@
  *   one PHI. MMU is the memory management unit translating program addresses.
  *   The declaration suffix is the hexadecimal instruction byte. op has no
  *   prefix; cb is bit operations; ed extensions; dd/fd select IX/IY; xycb
- *   uses a previously computed indexed address. Unsupported Z80 helpers
- *   remain declared but are rejected by the Z180 decoder's trap gate.
+ *   uses a previously computed indexed address. Only the encodings the Z180
+ *   accepts have handlers; the decoder traps the others.
  *
  *   NMI is the non-maskable interrupt; INT0 is the first maskable input.
  *   M1 identifies an opcode fetch. IOCR controls internal I/O and CCR the
@@ -28,9 +28,6 @@
  *   Sources: Zilog UM005004-0918 pp. 68-72, 173-183, 211-236, 247-280.
  *   The per-handler descriptions below use printed manual page numbers.
  */
-
-typedef void (Z180::*opcode_func)();
-static const opcode_func opcodes[6][0x100];
 
 // Rebuild sixteen 4-KiB translated page bases. CBAR selects the bank/common
 // boundaries; BBR/CBR add page offsets above them. Mask to 20 bits, then
@@ -88,9 +85,6 @@ inline uint8_t SLA(uint8_t value);
 // Return value shifted right with its sign bit retained; bit 0 becomes
 // carry. Set sign/zero/parity from the result (UM0050 pp. 218-219).
 inline uint8_t SRA(uint8_t value);
-// Retained Z80 helper: shift value left, insert one and set result flags.
-// The Z180 decoder traps this unsupported encoding (UM0050 pp. 68-72, 249).
-inline uint8_t SLL(uint8_t value);
 // Return value shifted right with zero inserted; bit 0 becomes carry.
 // Set sign/zero/parity from the result (UM0050 pp. 218-219).
 inline uint8_t SRL(uint8_t value);
@@ -127,24 +121,8 @@ uint8_t z180_readcontrol(uint32_t port);
 void z180_writecontrol(uint32_t port, uint8_t data);
 // Merge input bits into the CPU pin image; output callbacks own output bits.
 void z180_write_iolines(uint32_t data);
-// Clock both programmable reload timers once at PHI/20 (UM0050 pp. 157-164).
-void clock_timers();
 // Advance the free-running divider and reload timers by cycles whole PHI.
 void handle_io_timers(int cycles);
-#ifdef GS2_SS_TESTING
-// Test-only interrupt entry for priority index irq; return whole-PHI entry timing.
-int take_interrupt(int irq);
-// Test-only non-maskable interrupt entry; return whole-PHI entry timing.
-int take_nmi();
-// Test-only instruction-engine check for an enabled/requested DMA0 transfer.
-bool dma0_ready() const;
-// Test-only DMA0 execution within max_cycles whole-PHI budget; return consumed clocks.
-int z180_dma0(int max_cycles);
-// Test-only DMA1 byte transfer; return its whole-PHI cost.
-int z180_dma1();
-// Test-only instruction-engine interrupt priority scan; return selected entry timing.
-int check_interrupts();
-#endif
 
 // Consume instruction time without changing programmer registers. (UM0050 p. 235).
 void op_00();
@@ -870,30 +848,6 @@ void cb_2e();
 // Shift A right, retaining its sign bit. Set carry from the outgoing bit and flags from the
 // result. (UM0050 pp. 216-220).
 void cb_2f();
-// Retained Z80 helper: Shift B left, inserting one. Set carry from the outgoing bit and flags
-// from the result. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void cb_30();
-// Retained Z80 helper: Shift C left, inserting one. Set carry from the outgoing bit and flags
-// from the result. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void cb_31();
-// Retained Z80 helper: Shift D left, inserting one. Set carry from the outgoing bit and flags
-// from the result. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void cb_32();
-// Retained Z80 helper: Shift E left, inserting one. Set carry from the outgoing bit and flags
-// from the result. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void cb_33();
-// Retained Z80 helper: Shift H left, inserting one. Set carry from the outgoing bit and flags
-// from the result. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void cb_34();
-// Retained Z80 helper: Shift L left, inserting one. Set carry from the outgoing bit and flags
-// from the result. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void cb_35();
-// Retained Z80 helper: Shift memory at HL left, inserting one. Set carry from the outgoing bit
-// and flags from the result. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void cb_36();
-// Retained Z80 helper: Shift A left, inserting one. Set carry from the outgoing bit and flags
-// from the result. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void cb_37();
 // Shift B right, inserting zero. Set carry from the outgoing bit and flags from the result.
 // (UM0050 pp. 216-220).
 void cb_38();
@@ -1302,119 +1256,22 @@ void cb_fd();
 void cb_fe();
 // Set bit 7 of A; leave flags unchanged. (UM0050 pp. 219-220).
 void cb_ff();
-// Retained invalid-prefix diagnostic helper. Reads the offending bytes for the diagnostic call;
-// the Z180 decoder traps before these fallback handlers (UM0050 pp. 68-72).
-void illegal_1();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $00.
-void dd_00();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $01.
-void dd_01();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $02.
-void dd_02();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $03.
-void dd_03();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $04.
-void dd_04();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $05.
-void dd_05();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $06.
-void dd_06();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $07.
-void dd_07();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $08.
-void dd_08();
 // Add BC to IX. Store the wrapped result and update 16-bit arithmetic flags. (UM0050 p. 221).
 void dd_09();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $0A.
-void dd_0a();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $0B.
-void dd_0b();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $0C.
-void dd_0c();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $0D.
-void dd_0d();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $0E.
-void dd_0e();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $0F.
-void dd_0f();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $10.
-void dd_10();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $11.
-void dd_11();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $12.
-void dd_12();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $13.
-void dd_13();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $14.
-void dd_14();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $15.
-void dd_15();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $16.
-void dd_16();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $17.
-void dd_17();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $18.
-void dd_18();
 // Add DE to IX. Store the wrapped result and update 16-bit arithmetic flags. (UM0050 p. 221).
 void dd_19();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $1A.
-void dd_1a();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $1B.
-void dd_1b();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $1C.
-void dd_1c();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $1D.
-void dd_1d();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $1E.
-void dd_1e();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $1F.
-void dd_1f();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $20.
-void dd_20();
 // Copy the next immediate word to IX. (UM0050 pp. 222-224).
 void dd_21();
 // Copy IX to memory at the encoded address. (UM0050 pp. 222-224).
 void dd_22();
 // Increment IX with 16-bit wrap; flags stay unchanged. (UM0050 p. 221).
 void dd_23();
-// Retained Z80 helper: Increment the high byte of IX with 8-bit wrap; update arithmetic flags
-// and preserve carry. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void dd_24();
-// Retained Z80 helper: Decrement the high byte of IX with 8-bit wrap; update arithmetic flags
-// and preserve carry. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void dd_25();
-// Retained Z80 helper: Copy the next immediate byte to the high byte of IX. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void dd_26();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $27.
-void dd_27();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $28.
-void dd_28();
 // Add IX to IX. Store the wrapped result and update 16-bit arithmetic flags. (UM0050 p. 221).
 void dd_29();
 // Copy memory at the encoded address to IX. (UM0050 pp. 222-224).
 void dd_2a();
 // Decrement IX with 16-bit wrap; flags stay unchanged. (UM0050 p. 221).
 void dd_2b();
-// Retained Z80 helper: Increment the low byte of IX with 8-bit wrap; update arithmetic flags
-// and preserve carry. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void dd_2c();
-// Retained Z80 helper: Decrement the low byte of IX with 8-bit wrap; update arithmetic flags
-// and preserve carry. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void dd_2d();
-// Retained Z80 helper: Copy the next immediate byte to the low byte of IX. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void dd_2e();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $2F.
-void dd_2f();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $30.
-void dd_30();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $31.
-void dd_31();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $32.
-void dd_32();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $33.
-void dd_33();
 // Increment memory at IX plus the signed displacement with 8-bit wrap; update arithmetic flags
 // and preserve carry. (UM0050 p. 213).
 void dd_34();
@@ -1424,142 +1281,20 @@ void dd_35();
 // Copy the next immediate byte to memory at IX plus the signed displacement. (UM0050 pp.
 // 222-224).
 void dd_36();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $37.
-void dd_37();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $38.
-void dd_38();
 // Add SP to IX. Store the wrapped result and update 16-bit arithmetic flags. (UM0050 p. 221).
 void dd_39();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $3A.
-void dd_3a();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $3B.
-void dd_3b();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $3C.
-void dd_3c();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $3D.
-void dd_3d();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $3E.
-void dd_3e();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $3F.
-void dd_3f();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $40.
-void dd_40();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $41.
-void dd_41();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $42.
-void dd_42();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $43.
-void dd_43();
-// Retained Z80 helper: Copy the high byte of IX to B. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_44();
-// Retained Z80 helper: Copy the low byte of IX to B. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_45();
 // Copy memory at IX plus the signed displacement to B. (UM0050 pp. 222-224).
 void dd_46();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $47.
-void dd_47();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $48.
-void dd_48();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $49.
-void dd_49();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $4A.
-void dd_4a();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $4B.
-void dd_4b();
-// Retained Z80 helper: Copy the high byte of IX to C. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_4c();
-// Retained Z80 helper: Copy the low byte of IX to C. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_4d();
 // Copy memory at IX plus the signed displacement to C. (UM0050 pp. 222-224).
 void dd_4e();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $4F.
-void dd_4f();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $50.
-void dd_50();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $51.
-void dd_51();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $52.
-void dd_52();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $53.
-void dd_53();
-// Retained Z80 helper: Copy the high byte of IX to D. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_54();
-// Retained Z80 helper: Copy the low byte of IX to D. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_55();
 // Copy memory at IX plus the signed displacement to D. (UM0050 pp. 222-224).
 void dd_56();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $57.
-void dd_57();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $58.
-void dd_58();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $59.
-void dd_59();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $5A.
-void dd_5a();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $5B.
-void dd_5b();
-// Retained Z80 helper: Copy the high byte of IX to E. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_5c();
-// Retained Z80 helper: Copy the low byte of IX to E. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_5d();
 // Copy memory at IX plus the signed displacement to E. (UM0050 pp. 222-224).
 void dd_5e();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $5F.
-void dd_5f();
-// Retained Z80 helper: Copy B to the high byte of IX. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_60();
-// Retained Z80 helper: Copy C to the high byte of IX. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_61();
-// Retained Z80 helper: Copy D to the high byte of IX. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_62();
-// Retained Z80 helper: Copy E to the high byte of IX. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_63();
-// Retained Z80 helper: Leave the high byte of IX unchanged; this self-load still consumes
-// instruction time. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void dd_64();
-// Retained Z80 helper: Copy the low byte of IX to the high byte of IX. The Z180 decoder traps
-// this encoding (UM0050 pp. 68-72, 247-250).
-void dd_65();
 // Copy memory at IX plus the signed displacement to H. (UM0050 pp. 222-224).
 void dd_66();
-// Retained Z80 helper: Copy A to the high byte of IX. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_67();
-// Retained Z80 helper: Copy B to the low byte of IX. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_68();
-// Retained Z80 helper: Copy C to the low byte of IX. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_69();
-// Retained Z80 helper: Copy D to the low byte of IX. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_6a();
-// Retained Z80 helper: Copy E to the low byte of IX. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_6b();
-// Retained Z80 helper: Copy the high byte of IX to the low byte of IX. The Z180 decoder traps
-// this encoding (UM0050 pp. 68-72, 247-250).
-void dd_6c();
-// Retained Z80 helper: Leave the low byte of IX unchanged; this self-load still consumes
-// instruction time. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void dd_6d();
 // Copy memory at IX plus the signed displacement to L. (UM0050 pp. 222-224).
 void dd_6e();
-// Retained Z80 helper: Copy A to the low byte of IX. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_6f();
 // Copy B to memory at IX plus the signed displacement. (UM0050 pp. 222-224).
 void dd_70();
 // Copy C to memory at IX plus the signed displacement. (UM0050 pp. 222-224).
@@ -1572,454 +1307,100 @@ void dd_73();
 void dd_74();
 // Copy L to memory at IX plus the signed displacement. (UM0050 pp. 222-224).
 void dd_75();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $76.
-void dd_76();
 // Copy A to memory at IX plus the signed displacement. (UM0050 pp. 222-224).
 void dd_77();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $78.
-void dd_78();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $79.
-void dd_79();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $7A.
-void dd_7a();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $7B.
-void dd_7b();
-// Retained Z80 helper: Copy the high byte of IX to A. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_7c();
-// Retained Z80 helper: Copy the low byte of IX to A. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void dd_7d();
 // Copy memory at IX plus the signed displacement to A. (UM0050 pp. 222-224).
 void dd_7e();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $7F.
-void dd_7f();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $80.
-void dd_80();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $81.
-void dd_81();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $82.
-void dd_82();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $83.
-void dd_83();
-// Retained Z80 helper: Add the high byte of IX to A. Store the wrapped result and update 8-bit
-// arithmetic flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void dd_84();
-// Retained Z80 helper: Add the low byte of IX to A. Store the wrapped result and update 8-bit
-// arithmetic flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void dd_85();
 // Add memory at IX plus the signed displacement to A. Store the wrapped result and update 8-bit
 // arithmetic flags. (UM0050 pp. 211-212).
 void dd_86();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $87.
-void dd_87();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $88.
-void dd_88();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $89.
-void dd_89();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $8A.
-void dd_8a();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $8B.
-void dd_8b();
-// Retained Z80 helper: Add the high byte of IX and carry to A. Store the wrapped result and
-// update 8-bit arithmetic flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72,
-// 247-250).
-void dd_8c();
-// Retained Z80 helper: Add the low byte of IX and carry to A. Store the wrapped result and
-// update 8-bit arithmetic flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72,
-// 247-250).
-void dd_8d();
 // Add memory at IX plus the signed displacement and carry to A. Store the wrapped result and
 // update 8-bit arithmetic flags. (UM0050 pp. 211-212).
 void dd_8e();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $8F.
-void dd_8f();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $90.
-void dd_90();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $91.
-void dd_91();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $92.
-void dd_92();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $93.
-void dd_93();
-// Retained Z80 helper: Subtract the high byte of IX from A. Store the wrapped result and update
-// 8-bit arithmetic flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void dd_94();
-// Retained Z80 helper: Subtract the low byte of IX from A. Store the wrapped result and update
-// 8-bit arithmetic flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void dd_95();
 // Subtract memory at IX plus the signed displacement from A. Store the wrapped result and
 // update 8-bit arithmetic flags. (UM0050 pp. 211-212).
 void dd_96();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $97.
-void dd_97();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $98.
-void dd_98();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $99.
-void dd_99();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $9A.
-void dd_9a();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $9B.
-void dd_9b();
-// Retained Z80 helper: Subtract the high byte of IX and carry from A. Store the wrapped result
-// and update 8-bit arithmetic flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72,
-// 247-250).
-void dd_9c();
-// Retained Z80 helper: Subtract the low byte of IX and carry from A. Store the wrapped result
-// and update 8-bit arithmetic flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72,
-// 247-250).
-void dd_9d();
 // Subtract memory at IX plus the signed displacement and carry from A. Store the wrapped result
 // and update 8-bit arithmetic flags. (UM0050 pp. 211-212).
 void dd_9e();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $9F.
-void dd_9f();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A0.
-void dd_a0();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A1.
-void dd_a1();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A2.
-void dd_a2();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A3.
-void dd_a3();
-// Retained Z80 helper: Combine A with the high byte of IX using bitwise AND. Store A and set
-// logical-result flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void dd_a4();
-// Retained Z80 helper: Combine A with the low byte of IX using bitwise AND. Store A and set
-// logical-result flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void dd_a5();
 // Combine A with memory at IX plus the signed displacement using bitwise AND. Store A and set
 // logical-result flags. (UM0050 p. 214).
 void dd_a6();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A7.
-void dd_a7();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A8.
-void dd_a8();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A9.
-void dd_a9();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $AA.
-void dd_aa();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $AB.
-void dd_ab();
-// Retained Z80 helper: Combine A with the high byte of IX using bitwise exclusive OR. Store A
-// and set logical-result flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72,
-// 247-250).
-void dd_ac();
-// Retained Z80 helper: Combine A with the low byte of IX using bitwise exclusive OR. Store A
-// and set logical-result flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72,
-// 247-250).
-void dd_ad();
 // Combine A with memory at IX plus the signed displacement using bitwise exclusive OR. Store A
 // and set logical-result flags. (UM0050 p. 214).
 void dd_ae();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $AF.
-void dd_af();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B0.
-void dd_b0();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B1.
-void dd_b1();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B2.
-void dd_b2();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B3.
-void dd_b3();
-// Retained Z80 helper: Combine A with the high byte of IX using bitwise OR. Store A and set
-// logical-result flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void dd_b4();
-// Retained Z80 helper: Combine A with the low byte of IX using bitwise OR. Store A and set
-// logical-result flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void dd_b5();
 // Combine A with memory at IX plus the signed displacement using bitwise OR. Store A and set
 // logical-result flags. (UM0050 p. 214).
 void dd_b6();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B7.
-void dd_b7();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B8.
-void dd_b8();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B9.
-void dd_b9();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $BA.
-void dd_ba();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $BB.
-void dd_bb();
-// Retained Z80 helper: Compare A with the high byte of IX by setting subtraction flags; leave A
-// unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void dd_bc();
-// Retained Z80 helper: Compare A with the low byte of IX by setting subtraction flags; leave A
-// unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void dd_bd();
 // Compare A with memory at IX plus the signed displacement by setting subtraction flags; leave
 // A unchanged. (UM0050 p. 213).
 void dd_be();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $BF.
-void dd_bf();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C0.
-void dd_c0();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C1.
-void dd_c1();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C2.
-void dd_c2();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C3.
-void dd_c3();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C4.
-void dd_c4();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C5.
-void dd_c5();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C6.
-void dd_c6();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C7.
-void dd_c7();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C8.
-void dd_c8();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C9.
-void dd_c9();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $CA.
-void dd_ca();
 // Read the signed index displacement, save its effective address, then fetch and dispatch the
 // CB bit-operation byte (UM0050 pp. 182, 249, 267-271).
 void dd_cb();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $CC.
-void dd_cc();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $CD.
-void dd_cd();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $CE.
-void dd_ce();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $CF.
-void dd_cf();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D0.
-void dd_d0();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D1.
-void dd_d1();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D2.
-void dd_d2();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D3.
-void dd_d3();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D4.
-void dd_d4();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D5.
-void dd_d5();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D6.
-void dd_d6();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D7.
-void dd_d7();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D8.
-void dd_d8();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D9.
-void dd_d9();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $DA.
-void dd_da();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $DB.
-void dd_db();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $DC.
-void dd_dc();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $DD.
-void dd_dd();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $DE.
-void dd_de();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $DF.
-void dd_df();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $E0.
-void dd_e0();
 // Read the low then high stack bytes into IX and advance SP. (UM0050 p. 227).
 void dd_e1();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $E2.
-void dd_e2();
 // Exchange the word at SP and IX without changing arithmetic flags. (UM0050 p. 228).
 void dd_e3();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $E4.
-void dd_e4();
 // Store IX on the descending stack, high byte first. (UM0050 p. 227).
 void dd_e5();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $E6.
-void dd_e6();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $E7.
-void dd_e7();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $E8.
-void dd_e8();
 // Set PC to IX (the register value, without a memory read). (UM0050 pp. 229-230).
 void dd_e9();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $EA.
-void dd_ea();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $EB.
-void dd_eb();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $EC.
-void dd_ec();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $ED.
-void dd_ed();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $EE.
-void dd_ee();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $EF.
-void dd_ef();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F0.
-void dd_f0();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F1.
-void dd_f1();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F2.
-void dd_f2();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F3.
-void dd_f3();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F4.
-void dd_f4();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F5.
-void dd_f5();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F6.
-void dd_f6();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F7.
-void dd_f7();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F8.
-void dd_f8();
 // Copy IX to SP. (UM0050 pp. 222-224).
 void dd_f9();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $FA.
-void dd_fa();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $FB.
-void dd_fb();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $FC.
-void dd_fc();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $FD.
-void dd_fd();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $FE.
-void dd_fe();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $FF.
-void dd_ff();
-// Retained invalid-prefix diagnostic helper. Reads the offending bytes for the diagnostic call;
-// the Z180 decoder traps before these fallback handlers (UM0050 pp. 68-72).
-void illegal_2();
 // Read the immediate 8-bit port into B. Set sign/zero/parity and preserve carry. (UM0050 pp.
 // 231-234).
 void ed_00();
 // Write B to the immediate 8-bit port. (UM0050 pp. 231-234).
 void ed_01();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_02();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_03();
 // Set flags from A AND B without changing either operand. (UM0050 p. 214).
 void ed_04();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_05();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_06();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_07();
 // Read the immediate 8-bit port into C. Set sign/zero/parity and preserve carry. (UM0050 pp.
 // 231-234).
 void ed_08();
 // Write C to the immediate 8-bit port. (UM0050 pp. 231-234).
 void ed_09();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_0a();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_0b();
 // Set flags from A AND C without changing either operand. (UM0050 p. 214).
 void ed_0c();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_0d();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_0e();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_0f();
 // Read the immediate 8-bit port into D. Set sign/zero/parity and preserve carry. (UM0050 pp.
 // 231-234).
 void ed_10();
 // Write D to the immediate 8-bit port. (UM0050 pp. 231-234).
 void ed_11();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_12();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_13();
 // Set flags from A AND D without changing either operand. (UM0050 p. 214).
 void ed_14();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_15();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_16();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_17();
 // Read the immediate 8-bit port into E. Set sign/zero/parity and preserve carry. (UM0050 pp.
 // 231-234).
 void ed_18();
 // Write E to the immediate 8-bit port. (UM0050 pp. 231-234).
 void ed_19();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_1a();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_1b();
 // Set flags from A AND E without changing either operand. (UM0050 p. 214).
 void ed_1c();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_1d();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_1e();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_1f();
 // Read the immediate 8-bit port into H. Set sign/zero/parity and preserve carry. (UM0050 pp.
 // 231-234).
 void ed_20();
 // Write H to the immediate 8-bit port. (UM0050 pp. 231-234).
 void ed_21();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_22();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_23();
 // Set flags from A AND H without changing either operand. (UM0050 p. 214).
 void ed_24();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_25();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_26();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_27();
 // Read the immediate 8-bit port into L. Set sign/zero/parity and preserve carry. (UM0050 pp.
 // 231-234).
 void ed_28();
 // Write L to the immediate 8-bit port. (UM0050 pp. 231-234).
 void ed_29();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_2a();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_2b();
 // Set flags from A AND L without changing either operand. (UM0050 p. 214).
 void ed_2c();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_2d();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_2e();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_2f();
 // Read the immediate 8-bit port; discard the byte but update flags. (UM0050 pp. 231-234).
 void ed_30();
-// Retained Z80 helper: Write zero to the immediate 8-bit port. The Z180 decoder traps this
-// encoding (UM0050 pp. 68-72, 247-250).
-void ed_31();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_32();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_33();
 // Set flags from A AND memory at HL without changing either operand. (UM0050 p. 214).
 void ed_34();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_35();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_36();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_37();
 // Read the immediate 8-bit port into A. Set sign/zero/parity and preserve carry. (UM0050 pp.
 // 231-234).
 void ed_38();
 // Write A to the immediate 8-bit port. (UM0050 pp. 231-234).
 void ed_39();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_3a();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_3b();
 // Set flags from A AND A without changing either operand. (UM0050 p. 214).
 void ed_3c();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_3d();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_3e();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_3f();
 // Read the 16-bit port BC into B. Set sign/zero/parity and preserve carry. (UM0050 pp.
 // 231-234).
 void ed_40();
@@ -2056,9 +1437,6 @@ void ed_4c();
 // Pop the return PC and signal return-from-interrupt to the board; M1 mode may add refetch
 // cycles. (UM0050 pp. 84-85, 230).
 void ed_4d();
-// Retained Z80 helper: Select INT0 interrupt mode 0. Other interrupt sources retain their fixed
-// vector rules. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void ed_4e();
 // Copy A to R. (UM0050 pp. 222-224).
 void ed_4f();
 // Read the 16-bit port BC into D. Set sign/zero/parity and preserve carry. (UM0050 pp.
@@ -2071,12 +1449,6 @@ void ed_51();
 void ed_52();
 // Copy DE to memory at the encoded address. (UM0050 pp. 222-224).
 void ed_53();
-// Retained Z80 helper: Replace A with zero minus A and set subtraction flags. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void ed_54();
-// Retained Z80 helper: Pop the return PC and restore the interrupt enable saved on NMI entry.
-// The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void ed_55();
 // Select INT0 interrupt mode 1. Other interrupt sources retain their fixed vector rules.
 // (UM0050 pp. 75-86, 235).
 void ed_56();
@@ -2095,9 +1467,6 @@ void ed_5b();
 // Multiply the low and high bytes of DE as unsigned values; store their 16-bit product in that
 // pair. (UM0050 p. 221).
 void ed_5c();
-// Retained Z80 helper: Pop the return PC and signal return-from-interrupt to the board; M1 mode
-// may add refetch cycles. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void ed_5d();
 // Select INT0 interrupt mode 2. Other interrupt sources retain their fixed vector rules.
 // (UM0050 pp. 75-86, 235).
 void ed_5e();
@@ -2116,12 +1485,6 @@ void ed_63();
 // Set flags from A AND the next immediate mask without changing either operand. (UM0050 p.
 // 214).
 void ed_64();
-// Retained Z80 helper: Pop the return PC and restore the interrupt enable saved on NMI entry.
-// The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void ed_65();
-// Retained Z80 helper: Select INT0 interrupt mode 0. Other interrupt sources retain their fixed
-// vector rules. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void ed_66();
 // Rotate four-bit digits right between A's low digit and memory at HL; preserve carry. (UM0050
 // p. 218).
 void ed_67();
@@ -2138,20 +1501,11 @@ void ed_6b();
 // Multiply the low and high bytes of HL as unsigned values; store their 16-bit product in that
 // pair. (UM0050 p. 221).
 void ed_6c();
-// Retained Z80 helper: Pop the return PC and signal return-from-interrupt to the board; M1 mode
-// may add refetch cycles. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void ed_6d();
-// Retained Z80 helper: Select INT0 interrupt mode 0. Other interrupt sources retain their fixed
-// vector rules. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void ed_6e();
 // Rotate four-bit digits left between A's low digit and memory at HL; preserve carry. (UM0050
 // p. 218).
 void ed_6f();
 // Read the 16-bit port BC; discard the byte but update flags. (UM0050 pp. 231-234).
 void ed_70();
-// Retained Z80 helper: Write 0 to the 16-bit port BC. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void ed_71();
 // Subtract SP and carry from HL. Store the wrapped result and update 16-bit arithmetic flags.
 // (UM0050 p. 221).
 void ed_72();
@@ -2160,14 +1514,9 @@ void ed_73();
 // Read port C, AND it with the immediate mask, and set flags without retaining the byte.
 // (UM0050 p. 234).
 void ed_74();
-// Retained Z80 helper: Pop the return PC and restore the interrupt enable saved on NMI entry.
-// The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void ed_75();
 // Enter SLP; clock stopping and wake delay depend on IOCR/CCR and silicon revision. (UM0050 pp.
 // 34-41, 235).
 void ed_76();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_77();
 // Read the 16-bit port BC into A. Set sign/zero/parity and preserve carry. (UM0050 pp.
 // 231-234).
 void ed_78();
@@ -2181,84 +1530,20 @@ void ed_7b();
 // Multiply the low and high bytes of SP as unsigned values; store their 16-bit product in that
 // pair. (UM0050 p. 221).
 void ed_7c();
-// Retained Z80 helper: Pop the return PC and signal return-from-interrupt to the board; M1 mode
-// may add refetch cycles. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void ed_7d();
-// Retained Z80 helper: Select INT0 interrupt mode 2. Other interrupt sources retain their fixed
-// vector rules. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void ed_7e();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_7f();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_80();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_81();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_82();
 // Write memory at HL to port C; decrement B and increment HL. Move C in the same direction.
 // (UM0050 pp. 232-234).
 void ed_83();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_84();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_85();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_86();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_87();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_88();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_89();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_8a();
 // Write memory at HL to port C; decrement B and decrement HL. Move C in the same direction.
 // (UM0050 pp. 232-234).
 void ed_8b();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_8c();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_8d();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_8e();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_8f();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_90();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_91();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_92();
 // Write memory at HL to port C; decrement B and increment HL. Move C in the same direction.
 // Repeat until B reaches zero; PC backs up so each byte remains interruptible. (UM0050 pp.
 // 232-234).
 void ed_93();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_94();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_95();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_96();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_97();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_98();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_99();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_9a();
 // Write memory at HL to port C; decrement B and decrement HL. Move C in the same direction.
 // Repeat until B reaches zero; PC backs up so each byte remains interruptible. (UM0050 pp.
 // 232-234).
 void ed_9b();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_9c();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_9d();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_9e();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_9f();
 // Copy one byte from HL to DE; increment both addresses and decrement BC. (UM0050 p. 225).
 void ed_a0();
 // Compare A with memory at HL; increment HL and decrement BC. (UM0050 p. 226).
@@ -2267,14 +1552,6 @@ void ed_a1();
 void ed_a2();
 // Read memory at HL, decrement B, then write to port BC and increment HL. (UM0050 pp. 232-234).
 void ed_a3();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_a4();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_a5();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_a6();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_a7();
 // Copy one byte from HL to DE; decrement both addresses and decrement BC. (UM0050 p. 225).
 void ed_a8();
 // Compare A with memory at HL; decrement HL and decrement BC. (UM0050 p. 226).
@@ -2283,14 +1560,6 @@ void ed_a9();
 void ed_aa();
 // Read memory at HL, decrement B, then write to port BC and decrement HL. (UM0050 pp. 232-234).
 void ed_ab();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_ac();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_ad();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_ae();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_af();
 // Copy one byte from HL to DE; increment both addresses and decrement BC. Repeat by backing up
 // PC while BC is nonzero, allowing interrupts between bytes. (UM0050 p. 225).
 void ed_b0();
@@ -2303,14 +1572,6 @@ void ed_b2();
 // Read memory at HL, decrement B, then write to port BC and increment HL. Repeat until B reaches zero; PC
 // backs up so each byte remains interruptible. (UM0050 pp. 232-234).
 void ed_b3();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_b4();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_b5();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_b6();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_b7();
 // Copy one byte from HL to DE; decrement both addresses and decrement BC. Repeat by backing up
 // PC while BC is nonzero, allowing interrupts between bytes. (UM0050 p. 225).
 void ed_b8();
@@ -2323,252 +1584,22 @@ void ed_ba();
 // Read memory at HL, decrement B, then write to port BC and decrement HL. Repeat until B reaches zero; PC
 // backs up so each byte remains interruptible. (UM0050 pp. 232-234).
 void ed_bb();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_bc();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_bd();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_be();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_bf();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_c0();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_c1();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_c2();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_c3();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_c4();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_c5();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_c6();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_c7();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_c8();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_c9();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_ca();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_cb();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_cc();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_cd();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_ce();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_cf();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_d0();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_d1();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_d2();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_d3();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_d4();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_d5();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_d6();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_d7();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_d8();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_d9();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_da();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_db();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_dc();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_dd();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_de();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_df();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_e0();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_e1();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_e2();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_e3();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_e4();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_e5();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_e6();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_e7();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_e8();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_e9();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_ea();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_eb();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_ec();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_ed();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_ee();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_ef();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_f0();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_f1();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_f2();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_f3();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_f4();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_f5();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_f6();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_f7();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_f8();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_f9();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_fa();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_fb();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_fc();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_fd();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_fe();
-// Z180 traps this invalid ED opcode before its diagnostic handler.
-void ed_ff();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $00.
-void fd_00();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $01.
-void fd_01();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $02.
-void fd_02();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $03.
-void fd_03();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $04.
-void fd_04();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $05.
-void fd_05();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $06.
-void fd_06();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $07.
-void fd_07();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $08.
-void fd_08();
 // Add BC to IY. Store the wrapped result and update 16-bit arithmetic flags. (UM0050 p. 221).
 void fd_09();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $0A.
-void fd_0a();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $0B.
-void fd_0b();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $0C.
-void fd_0c();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $0D.
-void fd_0d();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $0E.
-void fd_0e();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $0F.
-void fd_0f();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $10.
-void fd_10();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $11.
-void fd_11();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $12.
-void fd_12();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $13.
-void fd_13();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $14.
-void fd_14();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $15.
-void fd_15();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $16.
-void fd_16();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $17.
-void fd_17();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $18.
-void fd_18();
 // Add DE to IY. Store the wrapped result and update 16-bit arithmetic flags. (UM0050 p. 221).
 void fd_19();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $1A.
-void fd_1a();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $1B.
-void fd_1b();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $1C.
-void fd_1c();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $1D.
-void fd_1d();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $1E.
-void fd_1e();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $1F.
-void fd_1f();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $20.
-void fd_20();
 // Copy the next immediate word to IY. (UM0050 pp. 222-224).
 void fd_21();
 // Copy IY to memory at the encoded address. (UM0050 pp. 222-224).
 void fd_22();
 // Increment IY with 16-bit wrap; flags stay unchanged. (UM0050 p. 221).
 void fd_23();
-// Retained Z80 helper: Increment the high byte of IY with 8-bit wrap; update arithmetic flags
-// and preserve carry. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void fd_24();
-// Retained Z80 helper: Decrement the high byte of IY with 8-bit wrap; update arithmetic flags
-// and preserve carry. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void fd_25();
-// Retained Z80 helper: Copy the next immediate byte to the high byte of IY. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void fd_26();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $27.
-void fd_27();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $28.
-void fd_28();
 // Add IY to IY. Store the wrapped result and update 16-bit arithmetic flags. (UM0050 p. 221).
 void fd_29();
 // Copy memory at the encoded address to IY. (UM0050 pp. 222-224).
 void fd_2a();
 // Decrement IY with 16-bit wrap; flags stay unchanged. (UM0050 p. 221).
 void fd_2b();
-// Retained Z80 helper: Increment the low byte of IY with 8-bit wrap; update arithmetic flags
-// and preserve carry. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void fd_2c();
-// Retained Z80 helper: Decrement the low byte of IY with 8-bit wrap; update arithmetic flags
-// and preserve carry. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void fd_2d();
-// Retained Z80 helper: Copy the next immediate byte to the low byte of IY. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void fd_2e();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $2F.
-void fd_2f();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $30.
-void fd_30();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $31.
-void fd_31();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $32.
-void fd_32();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $33.
-void fd_33();
 // Increment memory at IY plus the signed displacement with 8-bit wrap; update arithmetic flags
 // and preserve carry. (UM0050 p. 213).
 void fd_34();
@@ -2578,142 +1609,20 @@ void fd_35();
 // Copy the next immediate byte to memory at IY plus the signed displacement. (UM0050 pp.
 // 222-224).
 void fd_36();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $37.
-void fd_37();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $38.
-void fd_38();
 // Add SP to IY. Store the wrapped result and update 16-bit arithmetic flags. (UM0050 p. 221).
 void fd_39();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $3A.
-void fd_3a();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $3B.
-void fd_3b();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $3C.
-void fd_3c();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $3D.
-void fd_3d();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $3E.
-void fd_3e();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $3F.
-void fd_3f();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $40.
-void fd_40();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $41.
-void fd_41();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $42.
-void fd_42();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $43.
-void fd_43();
-// Retained Z80 helper: Copy the high byte of IY to B. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_44();
-// Retained Z80 helper: Copy the low byte of IY to B. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_45();
 // Copy memory at IY plus the signed displacement to B. (UM0050 pp. 222-224).
 void fd_46();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $47.
-void fd_47();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $48.
-void fd_48();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $49.
-void fd_49();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $4A.
-void fd_4a();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $4B.
-void fd_4b();
-// Retained Z80 helper: Copy the high byte of IY to C. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_4c();
-// Retained Z80 helper: Copy the low byte of IY to C. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_4d();
 // Copy memory at IY plus the signed displacement to C. (UM0050 pp. 222-224).
 void fd_4e();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $4F.
-void fd_4f();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $50.
-void fd_50();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $51.
-void fd_51();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $52.
-void fd_52();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $53.
-void fd_53();
-// Retained Z80 helper: Copy the high byte of IY to D. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_54();
-// Retained Z80 helper: Copy the low byte of IY to D. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_55();
 // Copy memory at IY plus the signed displacement to D. (UM0050 pp. 222-224).
 void fd_56();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $57.
-void fd_57();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $58.
-void fd_58();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $59.
-void fd_59();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $5A.
-void fd_5a();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $5B.
-void fd_5b();
-// Retained Z80 helper: Copy the high byte of IY to E. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_5c();
-// Retained Z80 helper: Copy the low byte of IY to E. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_5d();
 // Copy memory at IY plus the signed displacement to E. (UM0050 pp. 222-224).
 void fd_5e();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $5F.
-void fd_5f();
-// Retained Z80 helper: Copy B to the high byte of IY. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_60();
-// Retained Z80 helper: Copy C to the high byte of IY. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_61();
-// Retained Z80 helper: Copy D to the high byte of IY. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_62();
-// Retained Z80 helper: Copy E to the high byte of IY. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_63();
-// Retained Z80 helper: Leave the high byte of IY unchanged; this self-load still consumes
-// instruction time. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void fd_64();
-// Retained Z80 helper: Copy the low byte of IY to the high byte of IY. The Z180 decoder traps
-// this encoding (UM0050 pp. 68-72, 247-250).
-void fd_65();
 // Copy memory at IY plus the signed displacement to H. (UM0050 pp. 222-224).
 void fd_66();
-// Retained Z80 helper: Copy A to the high byte of IY. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_67();
-// Retained Z80 helper: Copy B to the low byte of IY. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_68();
-// Retained Z80 helper: Copy C to the low byte of IY. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_69();
-// Retained Z80 helper: Copy D to the low byte of IY. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_6a();
-// Retained Z80 helper: Copy E to the low byte of IY. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_6b();
-// Retained Z80 helper: Copy the high byte of IY to the low byte of IY. The Z180 decoder traps
-// this encoding (UM0050 pp. 68-72, 247-250).
-void fd_6c();
-// Retained Z80 helper: Leave the low byte of IY unchanged; this self-load still consumes
-// instruction time. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void fd_6d();
 // Copy memory at IY plus the signed displacement to L. (UM0050 pp. 222-224).
 void fd_6e();
-// Retained Z80 helper: Copy A to the low byte of IY. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_6f();
 // Copy B to memory at IY plus the signed displacement. (UM0050 pp. 222-224).
 void fd_70();
 // Copy C to memory at IY plus the signed displacement. (UM0050 pp. 222-224).
@@ -2726,1193 +1635,137 @@ void fd_73();
 void fd_74();
 // Copy L to memory at IY plus the signed displacement. (UM0050 pp. 222-224).
 void fd_75();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $76.
-void fd_76();
 // Copy A to memory at IY plus the signed displacement. (UM0050 pp. 222-224).
 void fd_77();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $78.
-void fd_78();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $79.
-void fd_79();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $7A.
-void fd_7a();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $7B.
-void fd_7b();
-// Retained Z80 helper: Copy the high byte of IY to A. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_7c();
-// Retained Z80 helper: Copy the low byte of IY to A. The Z180 decoder traps this encoding
-// (UM0050 pp. 68-72, 247-250).
-void fd_7d();
 // Copy memory at IY plus the signed displacement to A. (UM0050 pp. 222-224).
 void fd_7e();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $7F.
-void fd_7f();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $80.
-void fd_80();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $81.
-void fd_81();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $82.
-void fd_82();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $83.
-void fd_83();
-// Retained Z80 helper: Add the high byte of IY to A. Store the wrapped result and update 8-bit
-// arithmetic flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void fd_84();
-// Retained Z80 helper: Add the low byte of IY to A. Store the wrapped result and update 8-bit
-// arithmetic flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void fd_85();
 // Add memory at IY plus the signed displacement to A. Store the wrapped result and update 8-bit
 // arithmetic flags. (UM0050 pp. 211-212).
 void fd_86();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $87.
-void fd_87();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $88.
-void fd_88();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $89.
-void fd_89();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $8A.
-void fd_8a();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $8B.
-void fd_8b();
-// Retained Z80 helper: Add the high byte of IY and carry to A. Store the wrapped result and
-// update 8-bit arithmetic flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72,
-// 247-250).
-void fd_8c();
-// Retained Z80 helper: Add the low byte of IY and carry to A. Store the wrapped result and
-// update 8-bit arithmetic flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72,
-// 247-250).
-void fd_8d();
 // Add memory at IY plus the signed displacement and carry to A. Store the wrapped result and
 // update 8-bit arithmetic flags. (UM0050 pp. 211-212).
 void fd_8e();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $8F.
-void fd_8f();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $90.
-void fd_90();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $91.
-void fd_91();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $92.
-void fd_92();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $93.
-void fd_93();
-// Retained Z80 helper: Subtract the high byte of IY from A. Store the wrapped result and update
-// 8-bit arithmetic flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void fd_94();
-// Retained Z80 helper: Subtract the low byte of IY from A. Store the wrapped result and update
-// 8-bit arithmetic flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void fd_95();
 // Subtract memory at IY plus the signed displacement from A. Store the wrapped result and
 // update 8-bit arithmetic flags. (UM0050 pp. 211-212).
 void fd_96();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $97.
-void fd_97();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $98.
-void fd_98();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $99.
-void fd_99();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $9A.
-void fd_9a();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $9B.
-void fd_9b();
-// Retained Z80 helper: Subtract the high byte of IY and carry from A. Store the wrapped result
-// and update 8-bit arithmetic flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72,
-// 247-250).
-void fd_9c();
-// Retained Z80 helper: Subtract the low byte of IY and carry from A. Store the wrapped result
-// and update 8-bit arithmetic flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72,
-// 247-250).
-void fd_9d();
 // Subtract memory at IY plus the signed displacement and carry from A. Store the wrapped result
 // and update 8-bit arithmetic flags. (UM0050 pp. 211-212).
 void fd_9e();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $9F.
-void fd_9f();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A0.
-void fd_a0();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A1.
-void fd_a1();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A2.
-void fd_a2();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A3.
-void fd_a3();
-// Retained Z80 helper: Combine A with the high byte of IY using bitwise AND. Store A and set
-// logical-result flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void fd_a4();
-// Retained Z80 helper: Combine A with the low byte of IY using bitwise AND. Store A and set
-// logical-result flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void fd_a5();
 // Combine A with memory at IY plus the signed displacement using bitwise AND. Store A and set
 // logical-result flags. (UM0050 p. 214).
 void fd_a6();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A7.
-void fd_a7();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A8.
-void fd_a8();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $A9.
-void fd_a9();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $AA.
-void fd_aa();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $AB.
-void fd_ab();
-// Retained Z80 helper: Combine A with the high byte of IY using bitwise exclusive OR. Store A
-// and set logical-result flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72,
-// 247-250).
-void fd_ac();
-// Retained Z80 helper: Combine A with the low byte of IY using bitwise exclusive OR. Store A
-// and set logical-result flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72,
-// 247-250).
-void fd_ad();
 // Combine A with memory at IY plus the signed displacement using bitwise exclusive OR. Store A
 // and set logical-result flags. (UM0050 p. 214).
 void fd_ae();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $AF.
-void fd_af();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B0.
-void fd_b0();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B1.
-void fd_b1();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B2.
-void fd_b2();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B3.
-void fd_b3();
-// Retained Z80 helper: Combine A with the high byte of IY using bitwise OR. Store A and set
-// logical-result flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void fd_b4();
-// Retained Z80 helper: Combine A with the low byte of IY using bitwise OR. Store A and set
-// logical-result flags. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void fd_b5();
 // Combine A with memory at IY plus the signed displacement using bitwise OR. Store A and set
 // logical-result flags. (UM0050 p. 214).
 void fd_b6();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B7.
-void fd_b7();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B8.
-void fd_b8();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $B9.
-void fd_b9();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $BA.
-void fd_ba();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $BB.
-void fd_bb();
-// Retained Z80 helper: Compare A with the high byte of IY by setting subtraction flags; leave A
-// unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void fd_bc();
-// Retained Z80 helper: Compare A with the low byte of IY by setting subtraction flags; leave A
-// unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void fd_bd();
 // Compare A with memory at IY plus the signed displacement by setting subtraction flags; leave
 // A unchanged. (UM0050 p. 213).
 void fd_be();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $BF.
-void fd_bf();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C0.
-void fd_c0();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C1.
-void fd_c1();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C2.
-void fd_c2();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C3.
-void fd_c3();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C4.
-void fd_c4();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C5.
-void fd_c5();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C6.
-void fd_c6();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C7.
-void fd_c7();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C8.
-void fd_c8();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $C9.
-void fd_c9();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $CA.
-void fd_ca();
 // Read the signed index displacement, save its effective address, then fetch and dispatch the
 // CB bit-operation byte (UM0050 pp. 182, 249, 267-271).
 void fd_cb();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $CC.
-void fd_cc();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $CD.
-void fd_cd();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $CE.
-void fd_ce();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $CF.
-void fd_cf();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D0.
-void fd_d0();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D1.
-void fd_d1();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D2.
-void fd_d2();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D3.
-void fd_d3();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D4.
-void fd_d4();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D5.
-void fd_d5();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D6.
-void fd_d6();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D7.
-void fd_d7();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D8.
-void fd_d8();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $D9.
-void fd_d9();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $DA.
-void fd_da();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $DB.
-void fd_db();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $DC.
-void fd_dc();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $DD.
-void fd_dd();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $DE.
-void fd_de();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $DF.
-void fd_df();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $E0.
-void fd_e0();
 // Read the low then high stack bytes into IY and advance SP. (UM0050 p. 227).
 void fd_e1();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $E2.
-void fd_e2();
 // Exchange the word at SP and IY without changing arithmetic flags. (UM0050 p. 228).
 void fd_e3();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $E4.
-void fd_e4();
 // Store IY on the descending stack, high byte first. (UM0050 p. 227).
 void fd_e5();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $E6.
-void fd_e6();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $E7.
-void fd_e7();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $E8.
-void fd_e8();
 // Set PC to IY (the register value, without a memory read). (UM0050 pp. 229-230).
 void fd_e9();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $EA.
-void fd_ea();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $EB.
-void fd_eb();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $EC.
-void fd_ec();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $ED.
-void fd_ed();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $EE.
-void fd_ee();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $EF.
-void fd_ef();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F0.
-void fd_f0();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F1.
-void fd_f1();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F2.
-void fd_f2();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F3.
-void fd_f3();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F4.
-void fd_f4();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F5.
-void fd_f5();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F6.
-void fd_f6();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F7.
-void fd_f7();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $F8.
-void fd_f8();
 // Copy IY to SP. (UM0050 pp. 222-224).
 void fd_f9();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $FA.
-void fd_fa();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $FB.
-void fd_fb();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $FC.
-void fd_fc();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $FD.
-void fd_fd();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $FE.
-void fd_fe();
-// Z180 traps this encoding; the Z80 fallback diagnoses it and runs opcode $FF.
-void fd_ff();
-// Retained Z80 helper: Rotate memory at the saved indexed address left, wrapping bit 7 into bit
-// 0. Set carry from the outgoing bit and flags from the result. Also copy the result to B. The
-// Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_00();
-// Retained Z80 helper: Rotate memory at the saved indexed address left, wrapping bit 7 into bit
-// 0. Set carry from the outgoing bit and flags from the result. Also copy the result to C. The
-// Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_01();
-// Retained Z80 helper: Rotate memory at the saved indexed address left, wrapping bit 7 into bit
-// 0. Set carry from the outgoing bit and flags from the result. Also copy the result to D. The
-// Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_02();
-// Retained Z80 helper: Rotate memory at the saved indexed address left, wrapping bit 7 into bit
-// 0. Set carry from the outgoing bit and flags from the result. Also copy the result to E. The
-// Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_03();
-// Retained Z80 helper: Rotate memory at the saved indexed address left, wrapping bit 7 into bit
-// 0. Set carry from the outgoing bit and flags from the result. Also copy the result to H. The
-// Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_04();
-// Retained Z80 helper: Rotate memory at the saved indexed address left, wrapping bit 7 into bit
-// 0. Set carry from the outgoing bit and flags from the result. Also copy the result to L. The
-// Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_05();
 // Rotate memory at the saved indexed address left, wrapping bit 7 into bit 0. Set carry from
 // the outgoing bit and flags from the result. (UM0050 pp. 216-220).
 void xycb_06();
-// Retained Z80 helper: Rotate memory at the saved indexed address left, wrapping bit 7 into bit
-// 0. Set carry from the outgoing bit and flags from the result. Also copy the result to A. The
-// Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_07();
-// Retained Z80 helper: Rotate memory at the saved indexed address right, wrapping bit 0 into
-// bit 7. Set carry from the outgoing bit and flags from the result. Also copy the result to B.
-// The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_08();
-// Retained Z80 helper: Rotate memory at the saved indexed address right, wrapping bit 0 into
-// bit 7. Set carry from the outgoing bit and flags from the result. Also copy the result to C.
-// The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_09();
-// Retained Z80 helper: Rotate memory at the saved indexed address right, wrapping bit 0 into
-// bit 7. Set carry from the outgoing bit and flags from the result. Also copy the result to D.
-// The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_0a();
-// Retained Z80 helper: Rotate memory at the saved indexed address right, wrapping bit 0 into
-// bit 7. Set carry from the outgoing bit and flags from the result. Also copy the result to E.
-// The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_0b();
-// Retained Z80 helper: Rotate memory at the saved indexed address right, wrapping bit 0 into
-// bit 7. Set carry from the outgoing bit and flags from the result. Also copy the result to H.
-// The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_0c();
-// Retained Z80 helper: Rotate memory at the saved indexed address right, wrapping bit 0 into
-// bit 7. Set carry from the outgoing bit and flags from the result. Also copy the result to L.
-// The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_0d();
 // Rotate memory at the saved indexed address right, wrapping bit 0 into bit 7. Set carry from
 // the outgoing bit and flags from the result. (UM0050 pp. 216-220).
 void xycb_0e();
-// Retained Z80 helper: Rotate memory at the saved indexed address right, wrapping bit 0 into
-// bit 7. Set carry from the outgoing bit and flags from the result. Also copy the result to A.
-// The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_0f();
-// Retained Z80 helper: Rotate memory at the saved indexed address left through carry. Set carry
-// from the outgoing bit and flags from the result. Also copy the result to B. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_10();
-// Retained Z80 helper: Rotate memory at the saved indexed address left through carry. Set carry
-// from the outgoing bit and flags from the result. Also copy the result to C. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_11();
-// Retained Z80 helper: Rotate memory at the saved indexed address left through carry. Set carry
-// from the outgoing bit and flags from the result. Also copy the result to D. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_12();
-// Retained Z80 helper: Rotate memory at the saved indexed address left through carry. Set carry
-// from the outgoing bit and flags from the result. Also copy the result to E. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_13();
-// Retained Z80 helper: Rotate memory at the saved indexed address left through carry. Set carry
-// from the outgoing bit and flags from the result. Also copy the result to H. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_14();
-// Retained Z80 helper: Rotate memory at the saved indexed address left through carry. Set carry
-// from the outgoing bit and flags from the result. Also copy the result to L. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_15();
 // Rotate memory at the saved indexed address left through carry. Set carry from the outgoing
 // bit and flags from the result. (UM0050 pp. 216-220).
 void xycb_16();
-// Retained Z80 helper: Rotate memory at the saved indexed address left through carry. Set carry
-// from the outgoing bit and flags from the result. Also copy the result to A. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_17();
-// Retained Z80 helper: Rotate memory at the saved indexed address right through carry. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to B. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_18();
-// Retained Z80 helper: Rotate memory at the saved indexed address right through carry. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to C. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_19();
-// Retained Z80 helper: Rotate memory at the saved indexed address right through carry. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to D. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_1a();
-// Retained Z80 helper: Rotate memory at the saved indexed address right through carry. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to E. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_1b();
-// Retained Z80 helper: Rotate memory at the saved indexed address right through carry. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to H. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_1c();
-// Retained Z80 helper: Rotate memory at the saved indexed address right through carry. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to L. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_1d();
 // Rotate memory at the saved indexed address right through carry. Set carry from the outgoing
 // bit and flags from the result. (UM0050 pp. 216-220).
 void xycb_1e();
-// Retained Z80 helper: Rotate memory at the saved indexed address right through carry. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to A. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_1f();
-// Retained Z80 helper: Shift memory at the saved indexed address left, inserting zero. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to B. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_20();
-// Retained Z80 helper: Shift memory at the saved indexed address left, inserting zero. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to C. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_21();
-// Retained Z80 helper: Shift memory at the saved indexed address left, inserting zero. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to D. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_22();
-// Retained Z80 helper: Shift memory at the saved indexed address left, inserting zero. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to E. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_23();
-// Retained Z80 helper: Shift memory at the saved indexed address left, inserting zero. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to H. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_24();
-// Retained Z80 helper: Shift memory at the saved indexed address left, inserting zero. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to L. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_25();
 // Shift memory at the saved indexed address left, inserting zero. Set carry from the outgoing
 // bit and flags from the result. (UM0050 pp. 216-220).
 void xycb_26();
-// Retained Z80 helper: Shift memory at the saved indexed address left, inserting zero. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to A. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_27();
-// Retained Z80 helper: Shift memory at the saved indexed address right, retaining its sign bit.
-// Set carry from the outgoing bit and flags from the result. Also copy the result to B. The
-// Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_28();
-// Retained Z80 helper: Shift memory at the saved indexed address right, retaining its sign bit.
-// Set carry from the outgoing bit and flags from the result. Also copy the result to C. The
-// Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_29();
-// Retained Z80 helper: Shift memory at the saved indexed address right, retaining its sign bit.
-// Set carry from the outgoing bit and flags from the result. Also copy the result to D. The
-// Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_2a();
-// Retained Z80 helper: Shift memory at the saved indexed address right, retaining its sign bit.
-// Set carry from the outgoing bit and flags from the result. Also copy the result to E. The
-// Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_2b();
-// Retained Z80 helper: Shift memory at the saved indexed address right, retaining its sign bit.
-// Set carry from the outgoing bit and flags from the result. Also copy the result to H. The
-// Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_2c();
-// Retained Z80 helper: Shift memory at the saved indexed address right, retaining its sign bit.
-// Set carry from the outgoing bit and flags from the result. Also copy the result to L. The
-// Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_2d();
 // Shift memory at the saved indexed address right, retaining its sign bit. Set carry from the
 // outgoing bit and flags from the result. (UM0050 pp. 216-220).
 void xycb_2e();
-// Retained Z80 helper: Shift memory at the saved indexed address right, retaining its sign bit.
-// Set carry from the outgoing bit and flags from the result. Also copy the result to A. The
-// Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_2f();
-// Retained Z80 helper: Shift memory at the saved indexed address left, inserting one. Set carry
-// from the outgoing bit and flags from the result. Also copy the result to B. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_30();
-// Retained Z80 helper: Shift memory at the saved indexed address left, inserting one. Set carry
-// from the outgoing bit and flags from the result. Also copy the result to C. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_31();
-// Retained Z80 helper: Shift memory at the saved indexed address left, inserting one. Set carry
-// from the outgoing bit and flags from the result. Also copy the result to D. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_32();
-// Retained Z80 helper: Shift memory at the saved indexed address left, inserting one. Set carry
-// from the outgoing bit and flags from the result. Also copy the result to E. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_33();
-// Retained Z80 helper: Shift memory at the saved indexed address left, inserting one. Set carry
-// from the outgoing bit and flags from the result. Also copy the result to H. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_34();
-// Retained Z80 helper: Shift memory at the saved indexed address left, inserting one. Set carry
-// from the outgoing bit and flags from the result. Also copy the result to L. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_35();
-// Retained Z80 helper: Shift memory at the saved indexed address left, inserting one. Set carry
-// from the outgoing bit and flags from the result. The Z180 decoder traps this encoding (UM0050
-// pp. 68-72, 247-250).
-void xycb_36();
-// Retained Z80 helper: Shift memory at the saved indexed address left, inserting one. Set carry
-// from the outgoing bit and flags from the result. Also copy the result to A. The Z180 decoder
-// traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_37();
-// Retained Z80 helper: Shift memory at the saved indexed address right, inserting zero. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to B. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_38();
-// Retained Z80 helper: Shift memory at the saved indexed address right, inserting zero. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to C. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_39();
-// Retained Z80 helper: Shift memory at the saved indexed address right, inserting zero. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to D. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_3a();
-// Retained Z80 helper: Shift memory at the saved indexed address right, inserting zero. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to E. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_3b();
-// Retained Z80 helper: Shift memory at the saved indexed address right, inserting zero. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to H. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_3c();
-// Retained Z80 helper: Shift memory at the saved indexed address right, inserting zero. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to L. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_3d();
 // Shift memory at the saved indexed address right, inserting zero. Set carry from the outgoing
 // bit and flags from the result. (UM0050 pp. 216-220).
 void xycb_3e();
-// Retained Z80 helper: Shift memory at the saved indexed address right, inserting zero. Set
-// carry from the outgoing bit and flags from the result. Also copy the result to A. The Z180
-// decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_3f();
-// Retained Z80 helper: Test bit 0 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_40();
-// Retained Z80 helper: Test bit 0 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_41();
-// Retained Z80 helper: Test bit 0 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_42();
-// Retained Z80 helper: Test bit 0 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_43();
-// Retained Z80 helper: Test bit 0 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_44();
-// Retained Z80 helper: Test bit 0 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_45();
 // Test bit 0 of memory at the saved indexed address in the flags; leave the operand unchanged.
 // (UM0050 pp. 219-220).
 void xycb_46();
-// Retained Z80 helper: Test bit 0 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_47();
-// Retained Z80 helper: Test bit 1 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_48();
-// Retained Z80 helper: Test bit 1 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_49();
-// Retained Z80 helper: Test bit 1 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_4a();
-// Retained Z80 helper: Test bit 1 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_4b();
-// Retained Z80 helper: Test bit 1 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_4c();
-// Retained Z80 helper: Test bit 1 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_4d();
 // Test bit 1 of memory at the saved indexed address in the flags; leave the operand unchanged.
 // (UM0050 pp. 219-220).
 void xycb_4e();
-// Retained Z80 helper: Test bit 1 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_4f();
-// Retained Z80 helper: Test bit 2 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_50();
-// Retained Z80 helper: Test bit 2 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_51();
-// Retained Z80 helper: Test bit 2 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_52();
-// Retained Z80 helper: Test bit 2 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_53();
-// Retained Z80 helper: Test bit 2 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_54();
-// Retained Z80 helper: Test bit 2 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_55();
 // Test bit 2 of memory at the saved indexed address in the flags; leave the operand unchanged.
 // (UM0050 pp. 219-220).
 void xycb_56();
-// Retained Z80 helper: Test bit 2 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_57();
-// Retained Z80 helper: Test bit 3 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_58();
-// Retained Z80 helper: Test bit 3 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_59();
-// Retained Z80 helper: Test bit 3 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_5a();
-// Retained Z80 helper: Test bit 3 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_5b();
-// Retained Z80 helper: Test bit 3 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_5c();
-// Retained Z80 helper: Test bit 3 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_5d();
 // Test bit 3 of memory at the saved indexed address in the flags; leave the operand unchanged.
 // (UM0050 pp. 219-220).
 void xycb_5e();
-// Retained Z80 helper: Test bit 3 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_5f();
-// Retained Z80 helper: Test bit 4 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_60();
-// Retained Z80 helper: Test bit 4 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_61();
-// Retained Z80 helper: Test bit 4 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_62();
-// Retained Z80 helper: Test bit 4 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_63();
-// Retained Z80 helper: Test bit 4 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_64();
-// Retained Z80 helper: Test bit 4 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_65();
 // Test bit 4 of memory at the saved indexed address in the flags; leave the operand unchanged.
 // (UM0050 pp. 219-220).
 void xycb_66();
-// Retained Z80 helper: Test bit 4 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_67();
-// Retained Z80 helper: Test bit 5 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_68();
-// Retained Z80 helper: Test bit 5 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_69();
-// Retained Z80 helper: Test bit 5 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_6a();
-// Retained Z80 helper: Test bit 5 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_6b();
-// Retained Z80 helper: Test bit 5 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_6c();
-// Retained Z80 helper: Test bit 5 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_6d();
 // Test bit 5 of memory at the saved indexed address in the flags; leave the operand unchanged.
 // (UM0050 pp. 219-220).
 void xycb_6e();
-// Retained Z80 helper: Test bit 5 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_6f();
-// Retained Z80 helper: Test bit 6 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_70();
-// Retained Z80 helper: Test bit 6 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_71();
-// Retained Z80 helper: Test bit 6 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_72();
-// Retained Z80 helper: Test bit 6 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_73();
-// Retained Z80 helper: Test bit 6 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_74();
-// Retained Z80 helper: Test bit 6 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_75();
 // Test bit 6 of memory at the saved indexed address in the flags; leave the operand unchanged.
 // (UM0050 pp. 219-220).
 void xycb_76();
-// Retained Z80 helper: Test bit 6 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_77();
-// Retained Z80 helper: Test bit 7 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_78();
-// Retained Z80 helper: Test bit 7 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_79();
-// Retained Z80 helper: Test bit 7 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_7a();
-// Retained Z80 helper: Test bit 7 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_7b();
-// Retained Z80 helper: Test bit 7 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_7c();
-// Retained Z80 helper: Test bit 7 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_7d();
 // Test bit 7 of memory at the saved indexed address in the flags; leave the operand unchanged.
 // (UM0050 pp. 219-220).
 void xycb_7e();
-// Retained Z80 helper: Test bit 7 of memory at the saved indexed address in the flags; leave
-// the operand unchanged. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_7f();
-// Retained Z80 helper: Clear bit 0 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to B. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_80();
-// Retained Z80 helper: Clear bit 0 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to C. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_81();
-// Retained Z80 helper: Clear bit 0 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to D. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_82();
-// Retained Z80 helper: Clear bit 0 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to E. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_83();
-// Retained Z80 helper: Clear bit 0 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to H. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_84();
-// Retained Z80 helper: Clear bit 0 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to L. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_85();
 // Clear bit 0 of memory at the saved indexed address; leave flags unchanged. (UM0050 pp.
 // 219-220).
 void xycb_86();
-// Retained Z80 helper: Clear bit 0 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to A. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_87();
-// Retained Z80 helper: Clear bit 1 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to B. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_88();
-// Retained Z80 helper: Clear bit 1 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to C. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_89();
-// Retained Z80 helper: Clear bit 1 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to D. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_8a();
-// Retained Z80 helper: Clear bit 1 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to E. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_8b();
-// Retained Z80 helper: Clear bit 1 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to H. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_8c();
-// Retained Z80 helper: Clear bit 1 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to L. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_8d();
 // Clear bit 1 of memory at the saved indexed address; leave flags unchanged. (UM0050 pp.
 // 219-220).
 void xycb_8e();
-// Retained Z80 helper: Clear bit 1 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to A. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_8f();
-// Retained Z80 helper: Clear bit 2 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to B. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_90();
-// Retained Z80 helper: Clear bit 2 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to C. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_91();
-// Retained Z80 helper: Clear bit 2 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to D. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_92();
-// Retained Z80 helper: Clear bit 2 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to E. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_93();
-// Retained Z80 helper: Clear bit 2 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to H. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_94();
-// Retained Z80 helper: Clear bit 2 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to L. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_95();
 // Clear bit 2 of memory at the saved indexed address; leave flags unchanged. (UM0050 pp.
 // 219-220).
 void xycb_96();
-// Retained Z80 helper: Clear bit 2 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to A. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_97();
-// Retained Z80 helper: Clear bit 3 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to B. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_98();
-// Retained Z80 helper: Clear bit 3 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to C. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_99();
-// Retained Z80 helper: Clear bit 3 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to D. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_9a();
-// Retained Z80 helper: Clear bit 3 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to E. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_9b();
-// Retained Z80 helper: Clear bit 3 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to H. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_9c();
-// Retained Z80 helper: Clear bit 3 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to L. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_9d();
 // Clear bit 3 of memory at the saved indexed address; leave flags unchanged. (UM0050 pp.
 // 219-220).
 void xycb_9e();
-// Retained Z80 helper: Clear bit 3 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to A. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_9f();
-// Retained Z80 helper: Clear bit 4 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to B. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_a0();
-// Retained Z80 helper: Clear bit 4 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to C. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_a1();
-// Retained Z80 helper: Clear bit 4 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to D. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_a2();
-// Retained Z80 helper: Clear bit 4 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to E. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_a3();
-// Retained Z80 helper: Clear bit 4 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to H. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_a4();
-// Retained Z80 helper: Clear bit 4 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to L. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_a5();
 // Clear bit 4 of memory at the saved indexed address; leave flags unchanged. (UM0050 pp.
 // 219-220).
 void xycb_a6();
-// Retained Z80 helper: Clear bit 4 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to A. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_a7();
-// Retained Z80 helper: Clear bit 5 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to B. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_a8();
-// Retained Z80 helper: Clear bit 5 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to C. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_a9();
-// Retained Z80 helper: Clear bit 5 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to D. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_aa();
-// Retained Z80 helper: Clear bit 5 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to E. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_ab();
-// Retained Z80 helper: Clear bit 5 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to H. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_ac();
-// Retained Z80 helper: Clear bit 5 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to L. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_ad();
 // Clear bit 5 of memory at the saved indexed address; leave flags unchanged. (UM0050 pp.
 // 219-220).
 void xycb_ae();
-// Retained Z80 helper: Clear bit 5 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to A. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_af();
-// Retained Z80 helper: Clear bit 6 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to B. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_b0();
-// Retained Z80 helper: Clear bit 6 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to C. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_b1();
-// Retained Z80 helper: Clear bit 6 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to D. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_b2();
-// Retained Z80 helper: Clear bit 6 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to E. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_b3();
-// Retained Z80 helper: Clear bit 6 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to H. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_b4();
-// Retained Z80 helper: Clear bit 6 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to L. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_b5();
 // Clear bit 6 of memory at the saved indexed address; leave flags unchanged. (UM0050 pp.
 // 219-220).
 void xycb_b6();
-// Retained Z80 helper: Clear bit 6 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to A. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_b7();
-// Retained Z80 helper: Clear bit 7 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to B. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_b8();
-// Retained Z80 helper: Clear bit 7 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to C. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_b9();
-// Retained Z80 helper: Clear bit 7 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to D. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_ba();
-// Retained Z80 helper: Clear bit 7 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to E. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_bb();
-// Retained Z80 helper: Clear bit 7 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to H. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_bc();
-// Retained Z80 helper: Clear bit 7 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to L. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_bd();
 // Clear bit 7 of memory at the saved indexed address; leave flags unchanged. (UM0050 pp.
 // 219-220).
 void xycb_be();
-// Retained Z80 helper: Clear bit 7 of memory at the saved indexed address; leave flags
-// unchanged. Copy the changed byte to A. The Z180 decoder traps this encoding (UM0050 pp.
-// 68-72, 247-250).
-void xycb_bf();
-// Retained Z80 helper: Set bit 0 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to B. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_c0();
-// Retained Z80 helper: Set bit 0 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to C. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_c1();
-// Retained Z80 helper: Set bit 0 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to D. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_c2();
-// Retained Z80 helper: Set bit 0 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to E. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_c3();
-// Retained Z80 helper: Set bit 0 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to H. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_c4();
-// Retained Z80 helper: Set bit 0 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to L. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_c5();
 // Set bit 0 of memory at the saved indexed address; leave flags unchanged. (UM0050 pp.
 // 219-220).
 void xycb_c6();
-// Retained Z80 helper: Set bit 0 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to A. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_c7();
-// Retained Z80 helper: Set bit 1 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to B. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_c8();
-// Retained Z80 helper: Set bit 1 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to C. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_c9();
-// Retained Z80 helper: Set bit 1 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to D. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_ca();
-// Retained Z80 helper: Set bit 1 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to E. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_cb();
-// Retained Z80 helper: Set bit 1 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to H. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_cc();
-// Retained Z80 helper: Set bit 1 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to L. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_cd();
 // Set bit 1 of memory at the saved indexed address; leave flags unchanged. (UM0050 pp.
 // 219-220).
 void xycb_ce();
-// Retained Z80 helper: Set bit 1 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to A. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_cf();
-// Retained Z80 helper: Set bit 2 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to B. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_d0();
-// Retained Z80 helper: Set bit 2 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to C. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_d1();
-// Retained Z80 helper: Set bit 2 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to D. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_d2();
-// Retained Z80 helper: Set bit 2 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to E. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_d3();
-// Retained Z80 helper: Set bit 2 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to H. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_d4();
-// Retained Z80 helper: Set bit 2 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to L. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_d5();
 // Set bit 2 of memory at the saved indexed address; leave flags unchanged. (UM0050 pp.
 // 219-220).
 void xycb_d6();
-// Retained Z80 helper: Set bit 2 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to A. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_d7();
-// Retained Z80 helper: Set bit 3 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to B. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_d8();
-// Retained Z80 helper: Set bit 3 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to C. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_d9();
-// Retained Z80 helper: Set bit 3 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to D. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_da();
-// Retained Z80 helper: Set bit 3 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to E. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_db();
-// Retained Z80 helper: Set bit 3 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to H. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_dc();
-// Retained Z80 helper: Set bit 3 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to L. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_dd();
 // Set bit 3 of memory at the saved indexed address; leave flags unchanged. (UM0050 pp.
 // 219-220).
 void xycb_de();
-// Retained Z80 helper: Set bit 3 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to A. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_df();
-// Retained Z80 helper: Set bit 4 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to B. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_e0();
-// Retained Z80 helper: Set bit 4 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to C. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_e1();
-// Retained Z80 helper: Set bit 4 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to D. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_e2();
-// Retained Z80 helper: Set bit 4 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to E. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_e3();
-// Retained Z80 helper: Set bit 4 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to H. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_e4();
-// Retained Z80 helper: Set bit 4 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to L. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_e5();
 // Set bit 4 of memory at the saved indexed address; leave flags unchanged. (UM0050 pp.
 // 219-220).
 void xycb_e6();
-// Retained Z80 helper: Set bit 4 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to A. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_e7();
-// Retained Z80 helper: Set bit 5 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to B. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_e8();
-// Retained Z80 helper: Set bit 5 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to C. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_e9();
-// Retained Z80 helper: Set bit 5 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to D. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_ea();
-// Retained Z80 helper: Set bit 5 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to E. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_eb();
-// Retained Z80 helper: Set bit 5 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to H. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_ec();
-// Retained Z80 helper: Set bit 5 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to L. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_ed();
 // Set bit 5 of memory at the saved indexed address; leave flags unchanged. (UM0050 pp.
 // 219-220).
 void xycb_ee();
-// Retained Z80 helper: Set bit 5 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to A. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_ef();
-// Retained Z80 helper: Set bit 6 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to B. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_f0();
-// Retained Z80 helper: Set bit 6 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to C. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_f1();
-// Retained Z80 helper: Set bit 6 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to D. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_f2();
-// Retained Z80 helper: Set bit 6 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to E. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_f3();
-// Retained Z80 helper: Set bit 6 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to H. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_f4();
-// Retained Z80 helper: Set bit 6 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to L. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_f5();
 // Set bit 6 of memory at the saved indexed address; leave flags unchanged. (UM0050 pp.
 // 219-220).
 void xycb_f6();
-// Retained Z80 helper: Set bit 6 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to A. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_f7();
-// Retained Z80 helper: Set bit 7 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to B. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_f8();
-// Retained Z80 helper: Set bit 7 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to C. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_f9();
-// Retained Z80 helper: Set bit 7 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to D. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_fa();
-// Retained Z80 helper: Set bit 7 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to E. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_fb();
-// Retained Z80 helper: Set bit 7 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to H. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_fc();
-// Retained Z80 helper: Set bit 7 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to L. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_fd();
 // Set bit 7 of memory at the saved indexed address; leave flags unchanged. (UM0050 pp.
 // 219-220).
 void xycb_fe();
-// Retained Z80 helper: Set bit 7 of memory at the saved indexed address; leave flags unchanged.
-// Copy the changed byte to A. The Z180 decoder traps this encoding (UM0050 pp. 68-72, 247-250).
-void xycb_ff();

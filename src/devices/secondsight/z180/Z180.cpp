@@ -52,9 +52,6 @@
 #include <mutex>
 #include <stdexcept>
 
-// Illegal-opcode diagnostics evaluate bus reads even when logging is disabled.
-template <class... Args> static void z180_diagnostic(const char *, Args...) {}
-
 // Format an invariant failure for SSCard to retain and report after the worker
 // stops. Arguments have printf meanings; this never returns to a bus operation.
 template <class... Args> [[noreturn]] static void z180_error(const char *format, Args... args) {
@@ -152,13 +149,9 @@ template <class... Args> [[noreturn]] static void z180_error(const char *format,
 
 #define ix32 IX.d
 #define ix16 IX.w.l
-#define ixh IX.b.h
-#define ixl IX.b.l
 
 #define iy32 IY.d
 #define iy16 IY.w.l
-#define iyh IY.b.h
-#define iyl IY.b.l
 
 // Zilog UM0050 pp. 157-164: PRT registers and flag-clearing sequence.
 /* 10 TIMER control register (TIF1 and TIF0 are read-only) */
@@ -296,22 +289,6 @@ template <class... Args> [[noreturn]] static void z180_error(const char *format,
 // IOSTP stops the internal I/O clocks. IOCR bits 7:6 relocate the 64-byte
 // internal register window; port high bits must be zero (UM0050 pp. 42-48).
 #define Z180_IOCR_IOSTP 0x20
-
-/***************************************************************************
-    CPU PREFIXES
-
-    Indices select the handler rows in z180tbl.hpp: unprefixed, CB bit
-    operations, DD/FD index-register operations, ED extensions, and DD/FD-CB.
-***************************************************************************/
-
-#define Z180_PREFIX_op 0
-#define Z180_PREFIX_cb 1
-#define Z180_PREFIX_dd 2
-#define Z180_PREFIX_ed 3
-#define Z180_PREFIX_fd 4
-#define Z180_PREFIX_xycb 5
-
-#define Z180_PREFIX_COUNT (Z180_PREFIX_xycb + 1)
 
 static uint8_t SZ[256];       /* zero and sign flags */
 static uint8_t SZ_BIT[256];   /* zero, sign and parity/overflow (=zero) flags for BIT opcode_arg */
@@ -865,7 +842,7 @@ void Z180::z180_internal_port_write(uint8_t port, uint8_t data) {
         tcr = (tcr & (Z180_TCR_TIF1 | Z180_TCR_TIF0)) | (data & ~(Z180_TCR_TIF1 | Z180_TCR_TIF0));
         // TOUT is the timer output shared with address pin A18 (UM0050 p. 164).
         // The model retains timeout parity across pin selection: before the
-        // first timeout it is high. Forced levels are applied by clock_timers
+        // first timeout it is high. Forced levels are applied by handle_io_timers
         // at a timeout, rather than immediately by this write.
         tout_level = !prt1_timeout_odd;
         cycle_update_direct_reads();
@@ -992,13 +969,12 @@ void Z180::z180_internal_port_write(uint8_t port, uint8_t data) {
             // UM0050 pp107-109: after enabling a channel, edge-sense
             // transfers are requested by DREQ falling edges. Events from
             // before that enable are not a queue of pending DMA requests.
-            if (cycle_engine)
-                for (unsigned ch = 0; ch < 2; ++ch)
-                    if ((dstat & (0x40 << ch)) && (!(previous & (0x40 << ch)) || !(previous & Z180_DSTAT_DME)))
-                        dma_edge_sampled[ch] = dma_edge_accepted[ch] = dma_edge_generation[ch];
+            for (unsigned ch = 0; ch < 2; ++ch)
+                if ((dstat & (0x40 << ch)) && (!(previous & (0x40 << ch)) || !(previous & Z180_DSTAT_DME)))
+                    dma_edge_sampled[ch] = dma_edge_accepted[ch] = dma_edge_generation[ch];
             // UM0050 p106: a memory-to-memory start follows one further CPU
             // MC. The register-write MC itself does not satisfy that delay.
-            if (cycle_engine && (data & writable & Z180_DSTAT_DE0) && ((dmode >> 2) & 3) < 2 &&
+            if ((data & writable & Z180_DSTAT_DE0) && ((dmode >> 2) & 3) < 2 &&
                 ((dmode >> 4) & 3) < 2) {
                 dma_allowed = false;
                 dma_start_pending = cycle_executing;
@@ -1015,10 +991,9 @@ void Z180::z180_internal_port_write(uint8_t port, uint8_t data) {
 
         // Switching to edge-sensed DREQ starts with a fresh edge history;
         // a previously asserted level is not a new request (UM0050 pp. 107-110).
-        if (cycle_engine)
-            for (unsigned ch = 0; ch < 2; ++ch)
-                if ((data & ~dcntl) & (4 << ch))
-                    dma_edge_sampled[ch] = dma_edge_accepted[ch] = dma_edge_generation[ch];
+        for (unsigned ch = 0; ch < 2; ++ch)
+            if ((data & ~dcntl) & (4 << ch))
+                dma_edge_sampled[ch] = dma_edge_accepted[ch] = dma_edge_generation[ch];
         dcntl = data;
         break;
 
@@ -1080,7 +1055,7 @@ void Z180::z180_internal_port_write(uint8_t port, uint8_t data) {
 
 // Merge the supplied input-bit image into iol. Output bits belong to their
 // peripheral callbacks and are ignored here. This helper does not dispatch
-// serial edges; their pin methods do that (UM0050 pp. 7-13).
+// serial edges (UM0050 pp. 7-13).
 void Z180::z180_write_iolines(uint32_t data) {
     uint32_t changes = iol ^ data;
 
@@ -1256,43 +1231,6 @@ void Z180::reset_core() {
     timer_deadline = UINT64_MAX;
 }
 
-// Advance the PRT divide-by-20 clock, reload counters and latch timer IRQs.
-// Zilog UM0050 pp. 157-164, especially the zero/reload sequence in Fig. 64.
-void Z180::clock_timers() {
-    // UM0050 figure64: decrement through zero, reload on the next tick.
-    for (unsigned ch = 0; ch != 2; ++ch) {
-        if (!(tcr & (1 << ch)))
-            continue;
-        if (tmdr_value[ch] == 0)
-            tmdr_value[ch] = rldr[ch].w;
-        else
-            --tmdr_value[ch];
-        if (tmdr_value[ch] == 0) {
-            tcr |= Z180_TCR_TIF0 << ch;
-            if (ch == 1) {
-                prt1_timeout_odd = !prt1_timeout_odd;
-                bool const old_tout = tout_level;
-                switch (tcr & (Z180_TCR_TOC1 | Z180_TCR_TOC0)) {
-                case 0:
-                    tout_level = !prt1_timeout_odd;
-                    break;
-                case Z180_TCR_TOC0:
-                    tout_level = !tout_level;
-                    break;
-                case Z180_TCR_TOC1:
-                    tout_level = false;
-                    break;
-                case Z180_TCR_TOC1 | Z180_TCR_TOC0:
-                    tout_level = true;
-                    break;
-                }
-                if (old_tout != tout_level && (tcr & 0x0c))
-                    cycle_update_direct_reads();
-            }
-        }
-    }
-}
-
 // Advance the FRC divider and PRT counters by cycles whole PHI. Serial
 // deadlines are dispatched separately by the scheduler (UM0050 pp. 157-164).
 void Z180::handle_io_timers(int cycles) {
@@ -1347,25 +1285,16 @@ void Z180::handle_io_timers(int cycles) {
     }
 }
 
-// Select the machine-cycle engine or the test-only instruction-boundary oracle.
+// Run the machine-cycle engine for the current budget.
 void Z180::execute_run() {
 #ifdef GS2_SS_TESTING
     // Direct cycle fixtures can change private register fields between runs.
-    if (!executing && cycle_engine && !cycle_reference)
+    if (!executing)
         schedule_timers();
 #endif
-    if (cycle_engine)
-        execute_machine_cycles();
+    execute_machine_cycles();
 #ifdef GS2_SS_TESTING
-    else
-#ifdef GS2_SS_LEGACY_REFERENCE
-        execute_legacy();
-#else
-        z180_error("Instruction-boundary reference was not linked");
-#endif
-#endif
-#ifdef GS2_SS_TESTING
-    if (!executing && cycle_engine && !cycle_reference)
+    if (!executing)
         sync_timers();
 #endif
 }
@@ -1471,12 +1400,12 @@ void Z180::cycle_reset() {
     reti_notified = trap_started = interrupt_started = false;
 #endif
     bus_number = nominal = 0;
-    wait_line = bus_ack = sampled_bus_request = false;
+    bus_ack = sampled_bus_request = false;
     boundary_allowed = true;
     dma_allowed = dma_start_pending = false;
     refresh_pending = refresh_after_sleep = false;
     refresh_phase = phi_half = advance_left = refresh_address = 0;
-    half_phi = retired = fast_instructions = resumptions = 0;
+    half_phi = retired = 0;
     timer_anchor = 0;
     timer_deadline = UINT64_MAX;
     power_mode = 0;
@@ -1498,7 +1427,7 @@ void Z180::cycle_reset() {
 // IORQ assertion/release is distinct from the data sample (UM0050 pp. 16-17).
 inline void Z180::cycle_emit(uint8_t edge) {
 #ifdef GS2_SS_TESTING
-    if (cycle_engine && !cycle_reference && (cycle_observer || io_strobe))
+    if (cycle_observer || io_strobe)
         sync_timers();
 #endif
     // UM0050 p108 Fig49: TEND is low from T1 falling through T3
@@ -1518,7 +1447,7 @@ inline void Z180::cycle_emit(uint8_t edge) {
     if (cycle_observer)
         cycle_observer(half_phi, uint8_t(cycle.kind) + 16 * uint8_t(cycle.owner), edge, cycle.address, cycle.data);
 #ifdef GS2_SS_TESTING
-    if (cycle_engine && !cycle_reference && (cycle_observer || io_strobe))
+    if (cycle_observer || io_strobe)
         schedule_timers();
 #endif
 }
@@ -1539,7 +1468,7 @@ void Z180::cycle_suspend() {
             return;
         }
     }
-    if (scheduler && !cycle_reference) {
+    if (scheduler) {
         if (board_edge_at <= half_phi) {
             board_edge_at = UINT64_MAX;
             timer_limit = UINT64_MAX;
@@ -1620,34 +1549,10 @@ inline void Z180::advance_dividers(unsigned phi) {
         sync_timers();
 }
 
-// Find the next timer edge that limits fast execution. Production uses its
-// cached timeout; test replay derives observable edges from divider state.
-// UINT64_MAX means no timer stop is needed.
+// Find the next timer edge that limits fast execution: the cached timer
+// timeout. UINT64_MAX means no timer stop is needed.
 uint64_t Z180::timer_horizon() const {
-    if (!cycle_reference)
-        return timer_deadline;
-    if (!(tcr & 3) || (iocr & 0x20))
-        return UINT64_MAX;
-    // A timeout is visible only through TIF with TIE set (interrupt sample)
-    // or PRT1 toggling TOUT while it replaces A18 (UM0050 pp. 157-164).
-    // Other timeouts are read only through TCR, an I/O cycle that flushes.
-    unsigned ticks = UINT_MAX;
-    for (unsigned ch = 0; ch != 2; ++ch) {
-        if (!(tcr & (1 << ch)))
-            continue;
-        bool const flag = (tcr & (0x10 << ch)) && !(tcr & (Z180_TCR_TIF0 << ch));
-        if (!flag && !(ch == 1 && (tcr & 0x0c)))
-            continue;
-        unsigned const value = tmdr_value[ch];
-        ticks = std::min(ticks, value ? value : unsigned(rldr[ch].w) + 1);
-    }
-    if (ticks == UINT_MAX)
-        return UINT64_MAX;
-    // Invert handle_io_timers: a PRT tick is each FRC fall to an even count;
-    // FRC falls when the divide-by-ten prescaler completes a PHI count.
-    uint64_t const falls = 2 * uint64_t(ticks) - (frc & 1);
-    uint64_t const phi = 10 * falls - frc_prescale;
-    return half_phi + 2 * phi - phi_half;
+    return timer_deadline;
 }
 
 // Limit CPU time so a fast opcode fetch cannot cross a timer change. Return
@@ -1701,51 +1606,27 @@ inline void Z180::cycle_advance_quiet(unsigned ticks) {
 bool Z180::cycle_advance(unsigned ticks) {
     if (!advance_left)
         advance_left = ticks;
-    if (!cycle_reference) {
-        // No callback occurs inside this span. FRC/PRT already implement
-        // their divider and reload recurrences arithmetically; update them
-        // once at the next externally observable edge or scheduler boundary.
-        // Test execution can instead advance one half-PHI at a time below.
-        while (advance_left) {
-            if (icount <= 0) {
-                cycle_suspend();
-                if (reset_cancelled) { advance_left = 0; cycle.active = false; return false; }
-            }
-            unsigned const n = std::min<unsigned>(advance_left, icount);
-            advance_left -= n;
-            cycle_clock_step(n);
-            if (advance_left)
-                cycle_suspend();
-        }
-        return true;
-    }
+    // No callback occurs inside this span. FRC/PRT already implement
+    // their divider and reload recurrences arithmetically; update them
+    // once at the next externally observable edge or scheduler boundary.
     while (advance_left) {
         if (icount <= 0) {
             cycle_suspend();
             if (reset_cancelled) { advance_left = 0; cycle.active = false; return false; }
         }
-        unsigned n = std::min<unsigned>(advance_left, cycle_reference ? 1 : icount);
-        n = std::min(n, 2 * (10U - frc_prescale) - phi_half);
-        icount -= n;
+        unsigned const n = std::min<unsigned>(advance_left, icount);
         advance_left -= n;
-        half_phi += n;
-        cycle.elapsed += n;
-        unsigned const phi = (phi_half + n) / 2;
-        phi_half = (phi_half + n) & 1;
-        handle_io_timers(phi);
-        timer_anchor = half_phi - phi_half;
-        unsigned const period = 20U << (rcr & 3);
-        if ((rcr & 0x80) && (refresh_phase % period + n >= period) && !bus_ack)
-            refresh_pending = true;
-        refresh_phase = (refresh_phase + n) % 160;
+        cycle_clock_step(n);
+        if (advance_left)
+            cycle_suspend();
     }
     return true;
 }
 
 // A step wholly inside the available time needs no scheduler callback. Use
-// the resumable path for test replay, a partial step or a cancelled slice.
+// the resumable path for a partial step or a cancelled slice.
 inline bool Z180::cycle_advance_granted(unsigned ticks) {
-    if (!cycle_reference && !advance_left && !reset_cancelled && !yield_requested &&
+    if (!advance_left && !reset_cancelled && !yield_requested &&
         icount >= int(ticks)) {
         cycle_advance_quiet(ticks);
         return true;
@@ -1794,7 +1675,7 @@ void Z180::cycle_begin(cycle_owner owner, cycle_kind kind, uint32_t address, uin
         if (bus_wait && !(io && is_internal_io_address(address)) &&
             (io || write || force_memory_wait || !cycle_direct_read(address))) {
 #ifdef GS2_SS_TESTING
-            if (!cycle_reference) sync_timers();
+            sync_timers();
 #endif
             cycle.waits = std::max<unsigned>(cycle.waits, bus_wait(address, write, io));
         }
@@ -1863,11 +1744,9 @@ void Z180::cycle_sample_data() {
     }
 }
 
-// Internal I/O ignores external WAIT; all other accesses extend at T2/TW.
+// The waits recorded for this access extend it at T2/TW.
 bool Z180::cycle_wait_pending() const {
-    bool const internal_io = (cycle.kind == cycle_kind::input || cycle.kind == cycle_kind::output) &&
-                             is_internal_io_address(cycle.address);
-    return cycle.waits || (wait_line && !internal_io);
+    return cycle.waits;
 }
 
 // Execute machine-cycle edges, sampling WAIT at T2/TW falling. Internal I/O
@@ -1886,9 +1765,9 @@ void Z180::cycle_run() {
     while (cycle.active) {
         // The same phase rules below can combine adjacent unobserved edges
         // only within the current grant. TEND, I/O and live clocks stay exact.
-        bool const span = !cycle_reference && !cycle_observer && icount > 0 && !advance_left &&
+        bool const span = !cycle_observer && icount > 0 && !advance_left &&
             cycle.nominal == 3 && cycle.kind < cycle_kind::internal && !cycle.ttp && !cycle.trailing &&
-            !cycle.io_select_edge && !wait_line && !(tcr & 3) && cycle.waits <= 32765 &&
+            !cycle.io_select_edge && !(tcr & 3) && cycle.waits <= 32765 &&
             !(cycle.owner == cycle_owner::dma && dma_stage && dma_bcr[dma_channel].w == 1);
         bool const internal = cycle.kind == cycle_kind::internal || cycle.kind == cycle_kind::release;
         if (internal || cycle.kind == cycle_kind::refresh) {
@@ -2068,9 +1947,9 @@ void Z180::cycle_resume_admission(bool interrupt) {
     // the rest of the instruction can run before the next event. Invalidate, but do
     // not take a new pin sample here: a late IRQ after T2 must wait for the
     // next real Ti/memory cycle, if this instruction has one at all.
-    if (icount >= 2 && !cycle_reference && !cycle_observer && !trapping && (interrupt || instruction_interrupt < 0) &&
+    if (icount >= 2 && !cycle_observer && !trapping && (interrupt || instruction_interrupt < 0) &&
         !cycle.active &&
-        cursor == history_count && boundary_allowed && !wait_line &&
+        cursor == history_count && boundary_allowed &&
         !bus_released && !sampled_bus_request && !bus_ack && !nmi_pending && !refresh_pending &&
         (!(dstat & 0xc0) || dma_idle()) && ((!(tcr & 3) && timer_limit == UINT64_MAX) || admit_timers())) {
         instruction_fast = true;
@@ -2152,10 +2031,6 @@ uint8_t Z180::cycle_transaction(cycle_kind kind, uint32_t address, uint8_t data,
     uint8_t const result = cycle.data;
     if (!instruction_fast && kind <= cycle_kind::write)
         cycle_resume_admission();
-#ifdef GS2_SS_TESTING
-    if (cycle_reference)
-        throw cycle_yield{};
-#endif
     return result;
 }
 
@@ -2354,7 +2229,7 @@ void Z180::cycle_arbitrate() {
                 if (busack_cb)
                     busack_cb(true);
             }
-            if (!cycle.active && !cycle_reference && !cycle_observer && bus_released && icount >= 2) {
+            if (!cycle.active && !cycle_observer && bus_released && icount >= 2) {
                 // BUSREQ is constant until this scheduler grant ends. Compose
                 // its complete one-PHI release cycles with the exact divider
                 // recurrences; leave an odd final half-PHI to the phase engine.
@@ -2615,18 +2490,15 @@ void Z180::execute_machine_cycles() {
                     instruction_fast = instruction_interrupt < 0 && icount >= int(6 + 2 * memory_wait_states());
                 } else {
                     fast_irq_valid = false;
-                    instruction_fast = !cycle_reference && instruction_interrupt < 0 &&
+                    instruction_fast = instruction_interrupt < 0 &&
                                        icount >= int(6 + 2 * memory_wait_states()) &&
-                                       !wait_line && !bus_released &&
+                                       !bus_released &&
                                        !nmi_pending && (!(dstat & 0xc0) || dma_idle()) &&
                                        ((!(tcr & 3) && timer_limit == UINT64_MAX) || admit_timers());
                 }
-                if (instruction_fast)
-                    ++fast_instructions;
             }
 #ifdef GS2_SS_TESTING
             else {
-                ++resumptions;
                 instruction_fast = false;
             }
 #endif
@@ -2705,9 +2577,6 @@ Z180::Z180(Bus callbacks, uint32_t extal, Silicon revision)
                                      : (write ? Access::MemoryWrite : Access::MemoryRead),
                                   a);
         });
-#ifdef GS2_SS_TESTING
-    cycle_engine = true;
-#endif
     reset();
 }
 
@@ -2718,21 +2587,7 @@ uint32_t Z180::clock_hz() const {
 }
 // Convert EXTAL clocks to the active execution clock using CMR/CCR divisors.
 uint64_t Z180::clocks_to_cycles(uint64_t clocks) const {
-    return cycle_engine                 ? clock_multiplier_enabled() ? clocks * 4
-                                          : (ccr & 0x80)             ? clocks * 2
-                                                                     : clocks
-           : clock_multiplier_enabled() ? clocks * 2
-           : (ccr & 0x80)               ? clocks
-                                        : (clocks + 1) / 2;
-}
-// Invert the active clock-divider conversion without changing its epoch.
-uint64_t Z180::cycles_to_clocks(uint64_t ticks) const {
-    return cycle_engine                 ? clock_multiplier_enabled() ? (ticks + 3) / 4
-                                          : (ccr & 0x80)             ? (ticks + 1) / 2
-                                                                     : ticks
-           : clock_multiplier_enabled() ? (ticks + 1) / 2
-           : (ccr & 0x80)               ? ticks
-                                        : ticks * 2;
+    return clock_multiplier_enabled() ? clocks * 4 : (ccr & 0x80) ? clocks * 2 : clocks;
 }
 // Invalidate derived time after restoring counters or changing clock rate.
 
@@ -2821,16 +2676,13 @@ void Z180::run_half_until(uint64_t soft_end, uint64_t hard_limit) {
         budget_end = half_phi + span;
         uint64_t before = half_phi;
         execute_run();
-        if (!cycle_engine)
-            half_phi += 2 * (int(span) - icount);
         assert(half_phi > before || yield_requested);
     }
     // Direct test/debug execution has only its icount grant, not a board limit.
     run_soft_target = UINT64_MAX;
     executing = false;
 #ifdef GS2_SS_TESTING
-    if (cycle_engine && !cycle_reference)
-        sync_timers();
+    sync_timers();
 #endif
 }
 
@@ -2873,7 +2725,7 @@ bool Z180::refill_budget(bool in_handler) {
 // Arrange a board edge inside a granted interval so a batch need not
 // return at every idle half-PHI.
 bool Z180::schedule_board_edge(uint64_t half_deadline) {
-    if (!scheduled_timeline || !scheduler || !executing || cycle_reference || cycle_observer || power_mode ||
+    if (!scheduler || !executing || cycle_observer || power_mode ||
         !board_edge || half_deadline <= half_phi)
         return false;
     board_edge_at = half_deadline;
@@ -2947,7 +2799,7 @@ void Z180::set_state(const State &s) {
     IFF2 = s.iff2;
     HALT = s.halt;
 #ifdef GS2_SS_TESTING
-    if (cycle_engine && instruction_active) {
+    if (instruction_active) {
         instruction_start.control[2] = IFF1;
         instruction_start.control[3] = IFF2;
         instruction_start.control[4] = HALT;
@@ -2955,505 +2807,6 @@ void Z180::set_state(const State &s) {
 
 #endif
     instruction_fast = false;
-}
-
-#include <istream>
-#include <ostream>
-// Serialize CPU/peripheral state and test replay records for same-build saves.
-// Callbacks and host pointers belong to the embedding board, not the stream.
-// Return 0 on success or 1 on stream failure. Field order and native scalar
-// representation form a same-build format, not a portable hardware image.
-int Z180::save(std::ostream &stream) {
-    sync_timers();
-    uint32_t const format = 0x5a313802, revision = uint32_t(silicon);
-    stream.write(reinterpret_cast<const char *>(&format), sizeof(format));
-    stream.write(reinterpret_cast<const char *>(&revision), sizeof(revision));
-    stream.write(reinterpret_cast<const char *>(&power_mode), sizeof(power_mode));
-    stream.write(reinterpret_cast<const char *>(&wake_remaining), sizeof(wake_remaining));
-    stream.write(reinterpret_cast<const char *>(&cmr), sizeof(cmr));
-    stream.write(reinterpret_cast<const char *>(&ccr), sizeof(ccr));
-    epoch_time.save(stream);
-    stream.write(reinterpret_cast<const char *>(&epoch_half), sizeof(epoch_half));
-    stream.write(reinterpret_cast<const char *>(&epoch_rate), sizeof(epoch_rate));
-    stream.write(reinterpret_cast<const char *>(&attoseconds_per_cycle), sizeof(attoseconds_per_cycle));
-    // Architectural registers and interrupt inputs precede on-chip peripherals.
-    stream.write(reinterpret_cast<const char *>(&AF.w.l), sizeof(AF.w.l));
-    stream.write(reinterpret_cast<const char *>(&BC.w.l), sizeof(BC.w.l));
-    stream.write(reinterpret_cast<const char *>(&DE.w.l), sizeof(DE.w.l));
-    stream.write(reinterpret_cast<const char *>(&HL.w.l), sizeof(HL.w.l));
-    stream.write(reinterpret_cast<const char *>(&IX.w.l), sizeof(IX.w.l));
-    stream.write(reinterpret_cast<const char *>(&IY.w.l), sizeof(IY.w.l));
-    stream.write(reinterpret_cast<const char *>(&PC.w.l), sizeof(PC.w.l));
-    stream.write(reinterpret_cast<const char *>(&SP.w.l), sizeof(SP.w.l));
-    stream.write(reinterpret_cast<const char *>(&AF2.w.l), sizeof(AF2.w.l));
-    stream.write(reinterpret_cast<const char *>(&BC2.w.l), sizeof(BC2.w.l));
-    stream.write(reinterpret_cast<const char *>(&DE2.w.l), sizeof(DE2.w.l));
-    stream.write(reinterpret_cast<const char *>(&HL2.w.l), sizeof(HL2.w.l));
-    stream.write(reinterpret_cast<const char *>(&R), sizeof(R));
-    stream.write(reinterpret_cast<const char *>(&R2), sizeof(R2));
-    stream.write(reinterpret_cast<const char *>(&IFF1), sizeof(IFF1));
-    stream.write(reinterpret_cast<const char *>(&IFF2), sizeof(IFF2));
-    stream.write(reinterpret_cast<const char *>(&HALT), sizeof(HALT));
-    stream.write(reinterpret_cast<const char *>(&IM), sizeof(IM));
-    stream.write(reinterpret_cast<const char *>(&I), sizeof(I));
-    stream.write(reinterpret_cast<const char *>(&nmi_state), sizeof(nmi_state));
-    stream.write(reinterpret_cast<const char *>(&nmi_pending), sizeof(nmi_pending));
-    stream.write(reinterpret_cast<const char *>(&irq_state), sizeof(irq_state));
-    stream.write(reinterpret_cast<const char *>(&int_pending), sizeof(int_pending));
-    stream.write(reinterpret_cast<const char *>(&frc_prescale), sizeof(frc_prescale));
-    stream.write(reinterpret_cast<const char *>(&bus_released), sizeof(bus_released));
-    stream.write(reinterpret_cast<const char *>(&after_EI), sizeof(after_EI));
-    stream.write(reinterpret_cast<const char *>(&read_tcr_tmdr), sizeof(read_tcr_tmdr));
-    stream.write(reinterpret_cast<const char *>(&tmdr_value), sizeof(tmdr_value));
-    stream.write(reinterpret_cast<const char *>(&tmdrh), sizeof(tmdrh));
-    stream.write(reinterpret_cast<const char *>(&tmdr_latch), sizeof(tmdr_latch));
-    stream.write(reinterpret_cast<const char *>(&prt1_timeout_odd), sizeof(prt1_timeout_odd));
-    stream.write(reinterpret_cast<const char *>(&tout_level), sizeof(tout_level));
-    stream.write(reinterpret_cast<const char *>(&tmdr[0].w), sizeof(tmdr[0].w));
-    stream.write(reinterpret_cast<const char *>(&tmdr[1].w), sizeof(tmdr[1].w));
-    stream.write(reinterpret_cast<const char *>(&rldr[0].w), sizeof(rldr[0].w));
-    stream.write(reinterpret_cast<const char *>(&rldr[1].w), sizeof(rldr[1].w));
-    stream.write(reinterpret_cast<const char *>(&tcr), sizeof(tcr));
-    stream.write(reinterpret_cast<const char *>(&frc), sizeof(frc));
-    stream.write(reinterpret_cast<const char *>(&dma_sar0.d), sizeof(dma_sar0.d));
-    stream.write(reinterpret_cast<const char *>(&dma_dar0.d), sizeof(dma_dar0.d));
-    stream.write(reinterpret_cast<const char *>(&dma_bcr[0].w), sizeof(dma_bcr[0].w));
-    stream.write(reinterpret_cast<const char *>(&dma_bcr[1].w), sizeof(dma_bcr[1].w));
-    stream.write(reinterpret_cast<const char *>(&dma_mar1.d), sizeof(dma_mar1.d));
-    stream.write(reinterpret_cast<const char *>(&dma_iar1.d), sizeof(dma_iar1.d));
-    stream.write(reinterpret_cast<const char *>(&dstat), sizeof(dstat));
-    stream.write(reinterpret_cast<const char *>(&dmode), sizeof(dmode));
-    stream.write(reinterpret_cast<const char *>(&dcntl), sizeof(dcntl));
-    stream.write(reinterpret_cast<const char *>(&il), sizeof(il));
-    stream.write(reinterpret_cast<const char *>(&itc), sizeof(itc));
-    stream.write(reinterpret_cast<const char *>(&rcr), sizeof(rcr));
-    stream.write(reinterpret_cast<const char *>(&mmu_cbr), sizeof(mmu_cbr));
-    stream.write(reinterpret_cast<const char *>(&mmu_bbr), sizeof(mmu_bbr));
-    stream.write(reinterpret_cast<const char *>(&mmu_cbar), sizeof(mmu_cbar));
-    stream.write(reinterpret_cast<const char *>(&omcr), sizeof(omcr));
-    stream.write(reinterpret_cast<const char *>(&iocr), sizeof(iocr));
-    stream.write(reinterpret_cast<const char *>(&iol), sizeof(iol));
-    stream.write(reinterpret_cast<const char *>(&ioltemp), sizeof(ioltemp));
-    stream.write(reinterpret_cast<const char *>(&mmu), sizeof(mmu));
-    // Preserve cycle state; test execution also saves its replay records.
-    // Production does not restore a suspended instruction handler.
-    stream.write(reinterpret_cast<const char *>(&cycle_reference), sizeof(cycle_reference));
-    stream.write(reinterpret_cast<const char *>(&cycle_executing), sizeof(cycle_executing));
-    stream.write(reinterpret_cast<const char *>(&instruction_fast), sizeof(instruction_fast));
-    stream.write(reinterpret_cast<const char *>(&instruction_whole), sizeof(instruction_whole));
-    stream.write(reinterpret_cast<const char *>(&fast_irq_valid), sizeof(fast_irq_valid));
-    stream.write(reinterpret_cast<const char *>(&fast_interrupt), sizeof(fast_interrupt));
-    stream.write(reinterpret_cast<const char *>(&instruction_active), sizeof(instruction_active));
-    stream.write(reinterpret_cast<const char *>(&wait_line), sizeof(wait_line));
-    stream.write(reinterpret_cast<const char *>(&bus_ack), sizeof(bus_ack));
-    stream.write(reinterpret_cast<const char *>(&sampled_bus_request), sizeof(sampled_bus_request));
-    stream.write(reinterpret_cast<const char *>(&boundary_allowed), sizeof(boundary_allowed));
-    stream.write(reinterpret_cast<const char *>(&dma_allowed), sizeof(dma_allowed));
-    stream.write(reinterpret_cast<const char *>(&dma_start_pending), sizeof(dma_start_pending));
-    stream.write(reinterpret_cast<const char *>(&refresh_pending), sizeof(refresh_pending));
-    stream.write(reinterpret_cast<const char *>(&refresh_after_sleep), sizeof(refresh_after_sleep));
-    stream.write(reinterpret_cast<const char *>(&dma_edge), sizeof(dma_edge));
-    stream.write(reinterpret_cast<const char *>(&sampled_iol), sizeof(sampled_iol));
-    stream.write(reinterpret_cast<const char *>(&dma_edge_generation), sizeof(dma_edge_generation));
-    stream.write(reinterpret_cast<const char *>(&dma_edge_accepted), sizeof(dma_edge_accepted));
-    stream.write(reinterpret_cast<const char *>(&dma_edge_sampled), sizeof(dma_edge_sampled));
-    stream.write(reinterpret_cast<const char *>(&phi_half), sizeof(phi_half));
-    stream.write(reinterpret_cast<const char *>(&refresh_address), sizeof(refresh_address));
-    stream.write(reinterpret_cast<const char *>(&refresh_phase), sizeof(refresh_phase));
-    stream.write(reinterpret_cast<const char *>(&advance_left), sizeof(advance_left));
-    stream.write(reinterpret_cast<const char *>(&half_phi), sizeof(half_phi));
-#ifdef GS2_SS_TESTING
-#endif
-    stream.write(reinterpret_cast<const char *>(&retired), sizeof(retired));
-    stream.write(reinterpret_cast<const char *>(&fast_instructions), sizeof(fast_instructions));
-    stream.write(reinterpret_cast<const char *>(&resumptions), sizeof(resumptions));
-    checkpoint_continuation([&](auto &field) { stream.write(reinterpret_cast<const char *>(&field), sizeof(field)); });
-#ifdef GS2_SS_TESTING
-    stream.write(reinterpret_cast<const char *>(&history_count), sizeof(history_count));
-#endif
-#ifdef GS2_SS_TESTING
-    stream.write(reinterpret_cast<const char *>(&cursor), sizeof(cursor));
-#endif
-    stream.write(reinterpret_cast<const char *>(&bus_number), sizeof(bus_number));
-    stream.write(reinterpret_cast<const char *>(&nominal), sizeof(nominal));
-    stream.write(reinterpret_cast<const char *>(&family), sizeof(family));
-    stream.write(reinterpret_cast<const char *>(&opcode), sizeof(opcode));
-    stream.write(reinterpret_cast<const char *>(&trapping), sizeof(trapping));
-    stream.write(reinterpret_cast<const char *>(&third_trap), sizeof(third_trap));
-#ifdef GS2_SS_TESTING
-    stream.write(reinterpret_cast<const char *>(&reti_notified), sizeof(reti_notified));
-#endif
-#ifdef GS2_SS_TESTING
-    stream.write(reinterpret_cast<const char *>(&trap_started), sizeof(trap_started));
-#endif
-#ifdef GS2_SS_TESTING
-    stream.write(reinterpret_cast<const char *>(&interrupt_started), sizeof(interrupt_started));
-#endif
-    stream.write(reinterpret_cast<const char *>(&sampled_interrupt), sizeof(sampled_interrupt));
-    stream.write(reinterpret_cast<const char *>(&interrupt_recovery), sizeof(interrupt_recovery));
-    stream.write(reinterpret_cast<const char *>(&dma_nmi), sizeof(dma_nmi));
-    stream.write(reinterpret_cast<const char *>(&instruction_interrupt), sizeof(instruction_interrupt));
-    stream.write(reinterpret_cast<const char *>(&ack_vector), sizeof(ack_vector));
-    stream.write(reinterpret_cast<const char *>(&dma_channel), sizeof(dma_channel));
-    stream.write(reinterpret_cast<const char *>(&dma_stage), sizeof(dma_stage));
-    stream.write(reinterpret_cast<const char *>(&dma_continue), sizeof(dma_continue));
-    stream.write(reinterpret_cast<const char *>(&dma_byte), sizeof(dma_byte));
-    stream.write(reinterpret_cast<const char *>(&dma_source), sizeof(dma_source));
-    stream.write(reinterpret_cast<const char *>(&dma_destination), sizeof(dma_destination));
-    stream.write(reinterpret_cast<const char *>(&dma_source_io), sizeof(dma_source_io));
-    stream.write(reinterpret_cast<const char *>(&dma_destination_io), sizeof(dma_destination_io));
-    stream.write(reinterpret_cast<const char *>(&dma_source_mode), sizeof(dma_source_mode));
-    stream.write(reinterpret_cast<const char *>(&dma_destination_mode), sizeof(dma_destination_mode));
-    // Serial shift registers, queued bytes and deadlines must agree with
-    // the CPU clock epoch when execution resumes.
-    stream.write(reinterpret_cast<const char *>(&asci[0].asci_cntla), sizeof(asci[0].asci_cntla));
-    stream.write(reinterpret_cast<const char *>(&asci[0].asci_cntlb), sizeof(asci[0].asci_cntlb));
-    stream.write(reinterpret_cast<const char *>(&asci[0].asci_stat), sizeof(asci[0].asci_stat));
-    stream.write(reinterpret_cast<const char *>(&asci[0].asci_tdr), sizeof(asci[0].asci_tdr));
-    stream.write(reinterpret_cast<const char *>(&asci[0].asci_rdr), sizeof(asci[0].asci_rdr));
-    stream.write(reinterpret_cast<const char *>(&asci[0].asci_ext), sizeof(asci[0].asci_ext));
-    stream.write(reinterpret_cast<const char *>(&asci[0].asci_tc.w), sizeof(asci[0].asci_tc.w));
-    stream.write(reinterpret_cast<const char *>(&asci[0].tdr_empty), sizeof(asci[0].tdr_empty));
-    stream.write(reinterpret_cast<const char *>(&asci[0].tsr), sizeof(asci[0].tsr));
-    stream.write(reinterpret_cast<const char *>(&asci[0].rsr), sizeof(asci[0].rsr));
-    stream.write(reinterpret_cast<const char *>(&asci[0].data_fifo), sizeof(asci[0].data_fifo));
-    stream.write(reinterpret_cast<const char *>(&asci[0].error_fifo), sizeof(asci[0].error_fifo));
-    stream.write(reinterpret_cast<const char *>(&asci[0].fifo_wr), sizeof(asci[0].fifo_wr));
-    stream.write(reinterpret_cast<const char *>(&asci[0].fifo_rd), sizeof(asci[0].fifo_rd));
-    stream.write(reinterpret_cast<const char *>(&asci[0].fifo_count), sizeof(asci[0].fifo_count));
-    stream.write(reinterpret_cast<const char *>(&asci[0].fifo_overrun), sizeof(asci[0].fifo_overrun));
-    stream.write(reinterpret_cast<const char *>(&asci[0].cts), sizeof(asci[0].cts));
-    stream.write(reinterpret_cast<const char *>(&asci[0].dcd), sizeof(asci[0].dcd));
-    stream.write(reinterpret_cast<const char *>(&asci[0].irq), sizeof(asci[0].irq));
-    stream.write(reinterpret_cast<const char *>(&asci[0].txa), sizeof(asci[0].txa));
-    stream.write(reinterpret_cast<const char *>(&asci[0].rxa), sizeof(asci[0].rxa));
-    stream.write(reinterpret_cast<const char *>(&asci[0].rts), sizeof(asci[0].rts));
-    stream.write(reinterpret_cast<const char *>(&asci[0].divisor), sizeof(asci[0].divisor));
-    stream.write(reinterpret_cast<const char *>(&asci[0].clock_state), sizeof(asci[0].clock_state));
-    stream.write(reinterpret_cast<const char *>(&asci[0].tx_counter), sizeof(asci[0].tx_counter));
-    stream.write(reinterpret_cast<const char *>(&asci[0].tx_state), sizeof(asci[0].tx_state));
-    stream.write(reinterpret_cast<const char *>(&asci[0].rx_state), sizeof(asci[0].rx_state));
-    stream.write(reinterpret_cast<const char *>(&asci[0].rx_bits), sizeof(asci[0].rx_bits));
-    stream.write(reinterpret_cast<const char *>(&asci[0].rx_counter), sizeof(asci[0].rx_counter));
-    stream.write(reinterpret_cast<const char *>(&asci[0].rx_count_to), sizeof(asci[0].rx_count_to));
-    stream.write(reinterpret_cast<const char *>(&asci[0].rx_total_bits), sizeof(asci[0].rx_total_bits));
-    stream.write(reinterpret_cast<const char *>(&asci[0].rx_enabled), sizeof(asci[0].rx_enabled));
-    asci[0].bit_rate.save(stream);
-    asci[0].sample_rate.save(stream);
-    asci[0].receive_timer.deadline.save(stream);
-    asci[0].receive_timer.period.save(stream);
-    asci[0].transmit_timer.deadline.save(stream);
-    asci[0].transmit_timer.period.save(stream);
-    stream.write(reinterpret_cast<const char *>(&asci[0].clock_rate), sizeof(asci[0].clock_rate));
-    stream.write(reinterpret_cast<const char *>(&asci[0].io_stopped), sizeof(asci[0].io_stopped));
-    stream.write(reinterpret_cast<const char *>(&asci[1].asci_cntla), sizeof(asci[1].asci_cntla));
-    stream.write(reinterpret_cast<const char *>(&asci[1].asci_cntlb), sizeof(asci[1].asci_cntlb));
-    stream.write(reinterpret_cast<const char *>(&asci[1].asci_stat), sizeof(asci[1].asci_stat));
-    stream.write(reinterpret_cast<const char *>(&asci[1].asci_tdr), sizeof(asci[1].asci_tdr));
-    stream.write(reinterpret_cast<const char *>(&asci[1].asci_rdr), sizeof(asci[1].asci_rdr));
-    stream.write(reinterpret_cast<const char *>(&asci[1].asci_ext), sizeof(asci[1].asci_ext));
-    stream.write(reinterpret_cast<const char *>(&asci[1].asci_tc.w), sizeof(asci[1].asci_tc.w));
-    stream.write(reinterpret_cast<const char *>(&asci[1].tdr_empty), sizeof(asci[1].tdr_empty));
-    stream.write(reinterpret_cast<const char *>(&asci[1].tsr), sizeof(asci[1].tsr));
-    stream.write(reinterpret_cast<const char *>(&asci[1].rsr), sizeof(asci[1].rsr));
-    stream.write(reinterpret_cast<const char *>(&asci[1].data_fifo), sizeof(asci[1].data_fifo));
-    stream.write(reinterpret_cast<const char *>(&asci[1].error_fifo), sizeof(asci[1].error_fifo));
-    stream.write(reinterpret_cast<const char *>(&asci[1].fifo_wr), sizeof(asci[1].fifo_wr));
-    stream.write(reinterpret_cast<const char *>(&asci[1].fifo_rd), sizeof(asci[1].fifo_rd));
-    stream.write(reinterpret_cast<const char *>(&asci[1].fifo_count), sizeof(asci[1].fifo_count));
-    stream.write(reinterpret_cast<const char *>(&asci[1].fifo_overrun), sizeof(asci[1].fifo_overrun));
-    stream.write(reinterpret_cast<const char *>(&asci[1].cts), sizeof(asci[1].cts));
-    stream.write(reinterpret_cast<const char *>(&asci[1].dcd), sizeof(asci[1].dcd));
-    stream.write(reinterpret_cast<const char *>(&asci[1].irq), sizeof(asci[1].irq));
-    stream.write(reinterpret_cast<const char *>(&asci[1].txa), sizeof(asci[1].txa));
-    stream.write(reinterpret_cast<const char *>(&asci[1].rxa), sizeof(asci[1].rxa));
-    stream.write(reinterpret_cast<const char *>(&asci[1].rts), sizeof(asci[1].rts));
-    stream.write(reinterpret_cast<const char *>(&asci[1].divisor), sizeof(asci[1].divisor));
-    stream.write(reinterpret_cast<const char *>(&asci[1].clock_state), sizeof(asci[1].clock_state));
-    stream.write(reinterpret_cast<const char *>(&asci[1].tx_counter), sizeof(asci[1].tx_counter));
-    stream.write(reinterpret_cast<const char *>(&asci[1].tx_state), sizeof(asci[1].tx_state));
-    stream.write(reinterpret_cast<const char *>(&asci[1].rx_state), sizeof(asci[1].rx_state));
-    stream.write(reinterpret_cast<const char *>(&asci[1].rx_bits), sizeof(asci[1].rx_bits));
-    stream.write(reinterpret_cast<const char *>(&asci[1].rx_counter), sizeof(asci[1].rx_counter));
-    stream.write(reinterpret_cast<const char *>(&asci[1].rx_count_to), sizeof(asci[1].rx_count_to));
-    stream.write(reinterpret_cast<const char *>(&asci[1].rx_total_bits), sizeof(asci[1].rx_total_bits));
-    stream.write(reinterpret_cast<const char *>(&asci[1].rx_enabled), sizeof(asci[1].rx_enabled));
-    asci[1].bit_rate.save(stream);
-    asci[1].sample_rate.save(stream);
-    asci[1].receive_timer.deadline.save(stream);
-    asci[1].receive_timer.period.save(stream);
-    asci[1].transmit_timer.deadline.save(stream);
-    asci[1].transmit_timer.period.save(stream);
-    stream.write(reinterpret_cast<const char *>(&asci[1].clock_rate), sizeof(asci[1].clock_rate));
-    stream.write(reinterpret_cast<const char *>(&asci[1].io_stopped), sizeof(asci[1].io_stopped));
-    stream.write(reinterpret_cast<const char *>(&csio.cntr), sizeof(csio.cntr));
-    stream.write(reinterpret_cast<const char *>(&csio.trdr), sizeof(csio.trdr));
-    stream.write(reinterpret_cast<const char *>(&csio.shift_cnt), sizeof(csio.shift_cnt));
-    stream.write(reinterpret_cast<const char *>(&csio.irq), sizeof(csio.irq));
-    stream.write(reinterpret_cast<const char *>(&csio.cks_in), sizeof(csio.cks_in));
-    stream.write(reinterpret_cast<const char *>(&csio.rxs_in), sizeof(csio.rxs_in));
-    stream.write(reinterpret_cast<const char *>(&csio.cks_out), sizeof(csio.cks_out));
-    stream.write(reinterpret_cast<const char *>(&csio.txs_out), sizeof(csio.txs_out));
-    csio.timer.deadline.save(stream);
-    csio.timer.period.save(stream);
-    stream.write(reinterpret_cast<const char *>(&csio.clock_rate), sizeof(csio.clock_rate));
-    stream.write(reinterpret_cast<const char *>(&csio.io_stopped), sizeof(csio.io_stopped));
-    return stream ? 0 : 1;
-}
-// Restore the checkpoint and rebuild derived state; external callbacks remain
-// attached to the current board instance.
-// Return 1 for a wrong format/revision or a failed read, 0 on success.
-// A read failure may have changed part of the state; callers must treat it
-// as a failed restore. Derived pointers and time caches are rebuilt at the end.
-int Z180::load(std::istream &stream) {
-    board_edge_at = UINT64_MAX;
-    uint32_t format = 0, revision = 0;
-    stream.read(reinterpret_cast<char *>(&format), sizeof(format));
-    stream.read(reinterpret_cast<char *>(&revision), sizeof(revision));
-    if (!stream || format != 0x5a313802 || revision != uint32_t(silicon))
-        return 1;
-    stream.read(reinterpret_cast<char *>(&power_mode), sizeof(power_mode));
-    stream.read(reinterpret_cast<char *>(&wake_remaining), sizeof(wake_remaining));
-    stream.read(reinterpret_cast<char *>(&cmr), sizeof(cmr));
-    stream.read(reinterpret_cast<char *>(&ccr), sizeof(ccr));
-    epoch_time.load(stream);
-    stream.read(reinterpret_cast<char *>(&epoch_half), sizeof(epoch_half));
-    stream.read(reinterpret_cast<char *>(&epoch_rate), sizeof(epoch_rate));
-    stream.read(reinterpret_cast<char *>(&attoseconds_per_cycle), sizeof(attoseconds_per_cycle));
-    // Architectural registers and interrupt inputs precede on-chip peripherals.
-    stream.read(reinterpret_cast<char *>(&AF.w.l), sizeof(AF.w.l));
-    stream.read(reinterpret_cast<char *>(&BC.w.l), sizeof(BC.w.l));
-    stream.read(reinterpret_cast<char *>(&DE.w.l), sizeof(DE.w.l));
-    stream.read(reinterpret_cast<char *>(&HL.w.l), sizeof(HL.w.l));
-    stream.read(reinterpret_cast<char *>(&IX.w.l), sizeof(IX.w.l));
-    stream.read(reinterpret_cast<char *>(&IY.w.l), sizeof(IY.w.l));
-    stream.read(reinterpret_cast<char *>(&PC.w.l), sizeof(PC.w.l));
-    stream.read(reinterpret_cast<char *>(&SP.w.l), sizeof(SP.w.l));
-    stream.read(reinterpret_cast<char *>(&AF2.w.l), sizeof(AF2.w.l));
-    stream.read(reinterpret_cast<char *>(&BC2.w.l), sizeof(BC2.w.l));
-    stream.read(reinterpret_cast<char *>(&DE2.w.l), sizeof(DE2.w.l));
-    stream.read(reinterpret_cast<char *>(&HL2.w.l), sizeof(HL2.w.l));
-    stream.read(reinterpret_cast<char *>(&R), sizeof(R));
-    stream.read(reinterpret_cast<char *>(&R2), sizeof(R2));
-    stream.read(reinterpret_cast<char *>(&IFF1), sizeof(IFF1));
-    stream.read(reinterpret_cast<char *>(&IFF2), sizeof(IFF2));
-    stream.read(reinterpret_cast<char *>(&HALT), sizeof(HALT));
-    stream.read(reinterpret_cast<char *>(&IM), sizeof(IM));
-    stream.read(reinterpret_cast<char *>(&I), sizeof(I));
-    stream.read(reinterpret_cast<char *>(&nmi_state), sizeof(nmi_state));
-    stream.read(reinterpret_cast<char *>(&nmi_pending), sizeof(nmi_pending));
-    stream.read(reinterpret_cast<char *>(&irq_state), sizeof(irq_state));
-    stream.read(reinterpret_cast<char *>(&int_pending), sizeof(int_pending));
-    stream.read(reinterpret_cast<char *>(&frc_prescale), sizeof(frc_prescale));
-    stream.read(reinterpret_cast<char *>(&bus_released), sizeof(bus_released));
-    stream.read(reinterpret_cast<char *>(&after_EI), sizeof(after_EI));
-    stream.read(reinterpret_cast<char *>(&read_tcr_tmdr), sizeof(read_tcr_tmdr));
-    stream.read(reinterpret_cast<char *>(&tmdr_value), sizeof(tmdr_value));
-    stream.read(reinterpret_cast<char *>(&tmdrh), sizeof(tmdrh));
-    stream.read(reinterpret_cast<char *>(&tmdr_latch), sizeof(tmdr_latch));
-    stream.read(reinterpret_cast<char *>(&prt1_timeout_odd), sizeof(prt1_timeout_odd));
-    stream.read(reinterpret_cast<char *>(&tout_level), sizeof(tout_level));
-    stream.read(reinterpret_cast<char *>(&tmdr[0].w), sizeof(tmdr[0].w));
-    stream.read(reinterpret_cast<char *>(&tmdr[1].w), sizeof(tmdr[1].w));
-    stream.read(reinterpret_cast<char *>(&rldr[0].w), sizeof(rldr[0].w));
-    stream.read(reinterpret_cast<char *>(&rldr[1].w), sizeof(rldr[1].w));
-    stream.read(reinterpret_cast<char *>(&tcr), sizeof(tcr));
-    stream.read(reinterpret_cast<char *>(&frc), sizeof(frc));
-    stream.read(reinterpret_cast<char *>(&dma_sar0.d), sizeof(dma_sar0.d));
-    stream.read(reinterpret_cast<char *>(&dma_dar0.d), sizeof(dma_dar0.d));
-    stream.read(reinterpret_cast<char *>(&dma_bcr[0].w), sizeof(dma_bcr[0].w));
-    stream.read(reinterpret_cast<char *>(&dma_bcr[1].w), sizeof(dma_bcr[1].w));
-    stream.read(reinterpret_cast<char *>(&dma_mar1.d), sizeof(dma_mar1.d));
-    stream.read(reinterpret_cast<char *>(&dma_iar1.d), sizeof(dma_iar1.d));
-    stream.read(reinterpret_cast<char *>(&dstat), sizeof(dstat));
-    stream.read(reinterpret_cast<char *>(&dmode), sizeof(dmode));
-    stream.read(reinterpret_cast<char *>(&dcntl), sizeof(dcntl));
-    stream.read(reinterpret_cast<char *>(&il), sizeof(il));
-    stream.read(reinterpret_cast<char *>(&itc), sizeof(itc));
-    stream.read(reinterpret_cast<char *>(&rcr), sizeof(rcr));
-    stream.read(reinterpret_cast<char *>(&mmu_cbr), sizeof(mmu_cbr));
-    stream.read(reinterpret_cast<char *>(&mmu_bbr), sizeof(mmu_bbr));
-    stream.read(reinterpret_cast<char *>(&mmu_cbar), sizeof(mmu_cbar));
-    stream.read(reinterpret_cast<char *>(&omcr), sizeof(omcr));
-    stream.read(reinterpret_cast<char *>(&iocr), sizeof(iocr));
-    stream.read(reinterpret_cast<char *>(&iol), sizeof(iol));
-    stream.read(reinterpret_cast<char *>(&ioltemp), sizeof(ioltemp));
-    stream.read(reinterpret_cast<char *>(&mmu), sizeof(mmu));
-#ifdef GS2_SS_TESTING
-    // Preserve cycle state; test execution also saves its replay records.
-    // Production does not restore a suspended instruction handler.
-    stream.read(reinterpret_cast<char *>(&cycle_reference), sizeof(cycle_reference));
-#else
-    bool saved_reference = false;
-    stream.read(reinterpret_cast<char *>(&saved_reference), sizeof(saved_reference));
-    if (saved_reference)
-        return -1;
-#endif
-    stream.read(reinterpret_cast<char *>(&cycle_executing), sizeof(cycle_executing));
-    stream.read(reinterpret_cast<char *>(&instruction_fast), sizeof(instruction_fast));
-    stream.read(reinterpret_cast<char *>(&instruction_whole), sizeof(instruction_whole));
-    stream.read(reinterpret_cast<char *>(&fast_irq_valid), sizeof(fast_irq_valid));
-    stream.read(reinterpret_cast<char *>(&fast_interrupt), sizeof(fast_interrupt));
-    stream.read(reinterpret_cast<char *>(&instruction_active), sizeof(instruction_active));
-    stream.read(reinterpret_cast<char *>(&wait_line), sizeof(wait_line));
-    stream.read(reinterpret_cast<char *>(&bus_ack), sizeof(bus_ack));
-    stream.read(reinterpret_cast<char *>(&sampled_bus_request), sizeof(sampled_bus_request));
-    stream.read(reinterpret_cast<char *>(&boundary_allowed), sizeof(boundary_allowed));
-    stream.read(reinterpret_cast<char *>(&dma_allowed), sizeof(dma_allowed));
-    stream.read(reinterpret_cast<char *>(&dma_start_pending), sizeof(dma_start_pending));
-    stream.read(reinterpret_cast<char *>(&refresh_pending), sizeof(refresh_pending));
-    stream.read(reinterpret_cast<char *>(&refresh_after_sleep), sizeof(refresh_after_sleep));
-    stream.read(reinterpret_cast<char *>(&dma_edge), sizeof(dma_edge));
-    stream.read(reinterpret_cast<char *>(&sampled_iol), sizeof(sampled_iol));
-    stream.read(reinterpret_cast<char *>(&dma_edge_generation), sizeof(dma_edge_generation));
-    stream.read(reinterpret_cast<char *>(&dma_edge_accepted), sizeof(dma_edge_accepted));
-    stream.read(reinterpret_cast<char *>(&dma_edge_sampled), sizeof(dma_edge_sampled));
-    stream.read(reinterpret_cast<char *>(&phi_half), sizeof(phi_half));
-    stream.read(reinterpret_cast<char *>(&refresh_address), sizeof(refresh_address));
-    stream.read(reinterpret_cast<char *>(&refresh_phase), sizeof(refresh_phase));
-    stream.read(reinterpret_cast<char *>(&advance_left), sizeof(advance_left));
-    stream.read(reinterpret_cast<char *>(&half_phi), sizeof(half_phi));
-#ifdef GS2_SS_TESTING
-#endif
-    stream.read(reinterpret_cast<char *>(&retired), sizeof(retired));
-    stream.read(reinterpret_cast<char *>(&fast_instructions), sizeof(fast_instructions));
-    stream.read(reinterpret_cast<char *>(&resumptions), sizeof(resumptions));
-    checkpoint_continuation([&](auto &field) { stream.read(reinterpret_cast<char *>(&field), sizeof(field)); });
-#ifdef GS2_SS_TESTING
-    stream.read(reinterpret_cast<char *>(&history_count), sizeof(history_count));
-#endif
-#ifdef GS2_SS_TESTING
-    stream.read(reinterpret_cast<char *>(&cursor), sizeof(cursor));
-#endif
-    stream.read(reinterpret_cast<char *>(&bus_number), sizeof(bus_number));
-    stream.read(reinterpret_cast<char *>(&nominal), sizeof(nominal));
-    stream.read(reinterpret_cast<char *>(&family), sizeof(family));
-    stream.read(reinterpret_cast<char *>(&opcode), sizeof(opcode));
-    stream.read(reinterpret_cast<char *>(&trapping), sizeof(trapping));
-    stream.read(reinterpret_cast<char *>(&third_trap), sizeof(third_trap));
-#ifdef GS2_SS_TESTING
-    stream.read(reinterpret_cast<char *>(&reti_notified), sizeof(reti_notified));
-#endif
-#ifdef GS2_SS_TESTING
-    stream.read(reinterpret_cast<char *>(&trap_started), sizeof(trap_started));
-#endif
-#ifdef GS2_SS_TESTING
-    stream.read(reinterpret_cast<char *>(&interrupt_started), sizeof(interrupt_started));
-#endif
-    stream.read(reinterpret_cast<char *>(&sampled_interrupt), sizeof(sampled_interrupt));
-    stream.read(reinterpret_cast<char *>(&interrupt_recovery), sizeof(interrupt_recovery));
-    stream.read(reinterpret_cast<char *>(&dma_nmi), sizeof(dma_nmi));
-    stream.read(reinterpret_cast<char *>(&instruction_interrupt), sizeof(instruction_interrupt));
-    stream.read(reinterpret_cast<char *>(&ack_vector), sizeof(ack_vector));
-    stream.read(reinterpret_cast<char *>(&dma_channel), sizeof(dma_channel));
-    stream.read(reinterpret_cast<char *>(&dma_stage), sizeof(dma_stage));
-    stream.read(reinterpret_cast<char *>(&dma_continue), sizeof(dma_continue));
-    stream.read(reinterpret_cast<char *>(&dma_byte), sizeof(dma_byte));
-    stream.read(reinterpret_cast<char *>(&dma_source), sizeof(dma_source));
-    stream.read(reinterpret_cast<char *>(&dma_destination), sizeof(dma_destination));
-    stream.read(reinterpret_cast<char *>(&dma_source_io), sizeof(dma_source_io));
-    stream.read(reinterpret_cast<char *>(&dma_destination_io), sizeof(dma_destination_io));
-    stream.read(reinterpret_cast<char *>(&dma_source_mode), sizeof(dma_source_mode));
-    stream.read(reinterpret_cast<char *>(&dma_destination_mode), sizeof(dma_destination_mode));
-    // Serial shift registers, queued bytes and deadlines must agree with
-    // the CPU clock epoch when execution resumes.
-    stream.read(reinterpret_cast<char *>(&asci[0].asci_cntla), sizeof(asci[0].asci_cntla));
-    stream.read(reinterpret_cast<char *>(&asci[0].asci_cntlb), sizeof(asci[0].asci_cntlb));
-    stream.read(reinterpret_cast<char *>(&asci[0].asci_stat), sizeof(asci[0].asci_stat));
-    stream.read(reinterpret_cast<char *>(&asci[0].asci_tdr), sizeof(asci[0].asci_tdr));
-    stream.read(reinterpret_cast<char *>(&asci[0].asci_rdr), sizeof(asci[0].asci_rdr));
-    stream.read(reinterpret_cast<char *>(&asci[0].asci_ext), sizeof(asci[0].asci_ext));
-    stream.read(reinterpret_cast<char *>(&asci[0].asci_tc.w), sizeof(asci[0].asci_tc.w));
-    stream.read(reinterpret_cast<char *>(&asci[0].tdr_empty), sizeof(asci[0].tdr_empty));
-    stream.read(reinterpret_cast<char *>(&asci[0].tsr), sizeof(asci[0].tsr));
-    stream.read(reinterpret_cast<char *>(&asci[0].rsr), sizeof(asci[0].rsr));
-    stream.read(reinterpret_cast<char *>(&asci[0].data_fifo), sizeof(asci[0].data_fifo));
-    stream.read(reinterpret_cast<char *>(&asci[0].error_fifo), sizeof(asci[0].error_fifo));
-    stream.read(reinterpret_cast<char *>(&asci[0].fifo_wr), sizeof(asci[0].fifo_wr));
-    stream.read(reinterpret_cast<char *>(&asci[0].fifo_rd), sizeof(asci[0].fifo_rd));
-    stream.read(reinterpret_cast<char *>(&asci[0].fifo_count), sizeof(asci[0].fifo_count));
-    stream.read(reinterpret_cast<char *>(&asci[0].fifo_overrun), sizeof(asci[0].fifo_overrun));
-    stream.read(reinterpret_cast<char *>(&asci[0].cts), sizeof(asci[0].cts));
-    stream.read(reinterpret_cast<char *>(&asci[0].dcd), sizeof(asci[0].dcd));
-    stream.read(reinterpret_cast<char *>(&asci[0].irq), sizeof(asci[0].irq));
-    stream.read(reinterpret_cast<char *>(&asci[0].txa), sizeof(asci[0].txa));
-    stream.read(reinterpret_cast<char *>(&asci[0].rxa), sizeof(asci[0].rxa));
-    stream.read(reinterpret_cast<char *>(&asci[0].rts), sizeof(asci[0].rts));
-    stream.read(reinterpret_cast<char *>(&asci[0].divisor), sizeof(asci[0].divisor));
-    stream.read(reinterpret_cast<char *>(&asci[0].clock_state), sizeof(asci[0].clock_state));
-    stream.read(reinterpret_cast<char *>(&asci[0].tx_counter), sizeof(asci[0].tx_counter));
-    stream.read(reinterpret_cast<char *>(&asci[0].tx_state), sizeof(asci[0].tx_state));
-    stream.read(reinterpret_cast<char *>(&asci[0].rx_state), sizeof(asci[0].rx_state));
-    stream.read(reinterpret_cast<char *>(&asci[0].rx_bits), sizeof(asci[0].rx_bits));
-    stream.read(reinterpret_cast<char *>(&asci[0].rx_counter), sizeof(asci[0].rx_counter));
-    stream.read(reinterpret_cast<char *>(&asci[0].rx_count_to), sizeof(asci[0].rx_count_to));
-    stream.read(reinterpret_cast<char *>(&asci[0].rx_total_bits), sizeof(asci[0].rx_total_bits));
-    stream.read(reinterpret_cast<char *>(&asci[0].rx_enabled), sizeof(asci[0].rx_enabled));
-    asci[0].bit_rate.load(stream);
-    asci[0].sample_rate.load(stream);
-    asci[0].receive_timer.deadline.load(stream);
-    asci[0].receive_timer.period.load(stream);
-    asci[0].transmit_timer.deadline.load(stream);
-    asci[0].transmit_timer.period.load(stream);
-    stream.read(reinterpret_cast<char *>(&asci[0].clock_rate), sizeof(asci[0].clock_rate));
-    stream.read(reinterpret_cast<char *>(&asci[0].io_stopped), sizeof(asci[0].io_stopped));
-    stream.read(reinterpret_cast<char *>(&asci[1].asci_cntla), sizeof(asci[1].asci_cntla));
-    stream.read(reinterpret_cast<char *>(&asci[1].asci_cntlb), sizeof(asci[1].asci_cntlb));
-    stream.read(reinterpret_cast<char *>(&asci[1].asci_stat), sizeof(asci[1].asci_stat));
-    stream.read(reinterpret_cast<char *>(&asci[1].asci_tdr), sizeof(asci[1].asci_tdr));
-    stream.read(reinterpret_cast<char *>(&asci[1].asci_rdr), sizeof(asci[1].asci_rdr));
-    stream.read(reinterpret_cast<char *>(&asci[1].asci_ext), sizeof(asci[1].asci_ext));
-    stream.read(reinterpret_cast<char *>(&asci[1].asci_tc.w), sizeof(asci[1].asci_tc.w));
-    stream.read(reinterpret_cast<char *>(&asci[1].tdr_empty), sizeof(asci[1].tdr_empty));
-    stream.read(reinterpret_cast<char *>(&asci[1].tsr), sizeof(asci[1].tsr));
-    stream.read(reinterpret_cast<char *>(&asci[1].rsr), sizeof(asci[1].rsr));
-    stream.read(reinterpret_cast<char *>(&asci[1].data_fifo), sizeof(asci[1].data_fifo));
-    stream.read(reinterpret_cast<char *>(&asci[1].error_fifo), sizeof(asci[1].error_fifo));
-    stream.read(reinterpret_cast<char *>(&asci[1].fifo_wr), sizeof(asci[1].fifo_wr));
-    stream.read(reinterpret_cast<char *>(&asci[1].fifo_rd), sizeof(asci[1].fifo_rd));
-    stream.read(reinterpret_cast<char *>(&asci[1].fifo_count), sizeof(asci[1].fifo_count));
-    stream.read(reinterpret_cast<char *>(&asci[1].fifo_overrun), sizeof(asci[1].fifo_overrun));
-    stream.read(reinterpret_cast<char *>(&asci[1].cts), sizeof(asci[1].cts));
-    stream.read(reinterpret_cast<char *>(&asci[1].dcd), sizeof(asci[1].dcd));
-    stream.read(reinterpret_cast<char *>(&asci[1].irq), sizeof(asci[1].irq));
-    stream.read(reinterpret_cast<char *>(&asci[1].txa), sizeof(asci[1].txa));
-    stream.read(reinterpret_cast<char *>(&asci[1].rxa), sizeof(asci[1].rxa));
-    stream.read(reinterpret_cast<char *>(&asci[1].rts), sizeof(asci[1].rts));
-    stream.read(reinterpret_cast<char *>(&asci[1].divisor), sizeof(asci[1].divisor));
-    stream.read(reinterpret_cast<char *>(&asci[1].clock_state), sizeof(asci[1].clock_state));
-    stream.read(reinterpret_cast<char *>(&asci[1].tx_counter), sizeof(asci[1].tx_counter));
-    stream.read(reinterpret_cast<char *>(&asci[1].tx_state), sizeof(asci[1].tx_state));
-    stream.read(reinterpret_cast<char *>(&asci[1].rx_state), sizeof(asci[1].rx_state));
-    stream.read(reinterpret_cast<char *>(&asci[1].rx_bits), sizeof(asci[1].rx_bits));
-    stream.read(reinterpret_cast<char *>(&asci[1].rx_counter), sizeof(asci[1].rx_counter));
-    stream.read(reinterpret_cast<char *>(&asci[1].rx_count_to), sizeof(asci[1].rx_count_to));
-    stream.read(reinterpret_cast<char *>(&asci[1].rx_total_bits), sizeof(asci[1].rx_total_bits));
-    stream.read(reinterpret_cast<char *>(&asci[1].rx_enabled), sizeof(asci[1].rx_enabled));
-    asci[1].bit_rate.load(stream);
-    asci[1].sample_rate.load(stream);
-    asci[1].receive_timer.deadline.load(stream);
-    asci[1].receive_timer.period.load(stream);
-    asci[1].transmit_timer.deadline.load(stream);
-    asci[1].transmit_timer.period.load(stream);
-    stream.read(reinterpret_cast<char *>(&asci[1].clock_rate), sizeof(asci[1].clock_rate));
-    stream.read(reinterpret_cast<char *>(&asci[1].io_stopped), sizeof(asci[1].io_stopped));
-    stream.read(reinterpret_cast<char *>(&csio.cntr), sizeof(csio.cntr));
-    stream.read(reinterpret_cast<char *>(&csio.trdr), sizeof(csio.trdr));
-    stream.read(reinterpret_cast<char *>(&csio.shift_cnt), sizeof(csio.shift_cnt));
-    stream.read(reinterpret_cast<char *>(&csio.irq), sizeof(csio.irq));
-    stream.read(reinterpret_cast<char *>(&csio.cks_in), sizeof(csio.cks_in));
-    stream.read(reinterpret_cast<char *>(&csio.rxs_in), sizeof(csio.rxs_in));
-    stream.read(reinterpret_cast<char *>(&csio.cks_out), sizeof(csio.cks_out));
-    stream.read(reinterpret_cast<char *>(&csio.txs_out), sizeof(csio.txs_out));
-    csio.timer.deadline.load(stream);
-    csio.timer.period.load(stream);
-    stream.read(reinterpret_cast<char *>(&csio.clock_rate), sizeof(csio.clock_rate));
-    stream.read(reinterpret_cast<char *>(&csio.io_stopped), sizeof(csio.io_stopped));
-    instruction_fast = instruction_whole = cycle_executing = false;
-    timer_anchor = half_phi - phi_half;
-    schedule_timers();
-    cycle_update_direct_reads();
-    return stream ? 0 : 1;
 }
 
 // Combine established idle cycles only. The available time is already bounded
@@ -3537,6 +2890,3 @@ bool Z180::run_low_power() {
     return false;
 }
 
-#if defined(GS2_SS_TESTING) && defined(GS2_SS_LEGACY_REFERENCE)
-#include "legacy.hxx"
-#endif
