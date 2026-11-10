@@ -187,6 +187,10 @@ I don't know what all these words mean exactly. But I confirmed it does seem to 
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+	// GS Composite requires its optional encoder, unlike CPU composite and mono.
+	if (menuItem.action == @selector(monitorGSComposite:)) {
+		return getMenuInterface()->monitorAvailable(MONITOR_GS_COMPOSITE);
+	}
 	if (menuItem.action == @selector(appQuit:)) {
 		return !getMenuInterface()->isEmulationRunning();
 	}

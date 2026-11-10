@@ -121,6 +121,8 @@ Both are useful when recording video and you want a clean picture. Preferences a
 **Second Sight Text** (IIgs with a Second Sight card) renders Apple II 40/80-column text through the card’s VGA path. Grayed out if the current machine has no Second Sight. See [Second Sight](Cards_SecondSight.md) and [Displays](Displays.md).  
 **CRT Shader** applies a GPU CRT effect. Shortcut: **F7**. Available on macOS, Windows, and Linux. See [Displays](Displays.md).
 
+GPU-only choices, including **GS Composite** and **Monochrome persistence**, are grayed out when their required shaders or render targets are unavailable. Composite and monochrome still work through the CPU decoder.
+
 Hover speed and display widgets appear automatically when the mouse is over the window and is not captured. There is no Hover Enable menu item. See [On-Screen Display](OSD.md).
 
 ### Debug

@@ -49,6 +49,8 @@ Available on macOS (Metal), Windows (D3D12), and Linux (Vulkan / SPIR-V). Works 
 
 The shader mode can be activated with Display > CRT Shader, or by pressing F7. The [`-g`](CommandLine.md) command-line flag enables it at boot.
 
+GPU effects are optional. If a shader or its render target cannot be created, the corresponding effect is disabled and its menu item is grayed out. Composite and monochrome retain their CPU decoders. **GS Composite** requires its GPU encoder; **Monochrome persistence** also requires its history texture and blend operations.
+
 ## Second Sight Text
 
 If the current machine has a **Second Sight** card, **Display → Second Sight Text** renders Apple II fullscreen 40- or 80-column text through the card’s VGA path, using an Apple-ified font from the Second Sight ROM. Graphics modes and Second Sight’s own VGA modes are unchanged.

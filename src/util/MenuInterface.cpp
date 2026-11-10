@@ -35,7 +35,12 @@ void MenuInterface::setSpeed(int speed_id) {
 }
 
 void MenuInterface::setMonitor(int monitor_id) {
-	pushMenuEvent(monitor_id);
+	if (monitorAvailable(monitor_id)) pushMenuEvent(monitor_id);
+}
+
+bool MenuInterface::monitorAvailable(int monitor_id) {
+    return computer_ && computer_->video_system &&
+        (monitor_id != MONITOR_GS_COMPOSITE || computer_->video_system->gscomposite_allowed);
 }
 
 void MenuInterface::openDebugWindow() { pushMenuEvent(MENU_OPEN_DEBUG_WINDOW); }
